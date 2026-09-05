@@ -5,6 +5,36 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.4.0] - 2026-09-05
+
+Phase 1.2 — les catalogues. Première des cinq tranches du schéma compagnon.
+
+### Added
+
+- **feat(db)** : les vocabulaires contrôlés dans lesquels l'utilisateur choisit — genres,
+  morphologies, couleurs de cheveux et d'yeux, styles vestimentaires, tranches d'âge apparentes,
+  vingt archétypes, treize tons, leurs fusions nommées orientées, et six curseurs gradués avec
+  leurs plafonds par juridiction.
+- **feat(db)** : `db::catalogues`, la lecture de ces tables. Les cinq catalogues d'apparence
+  partagent une seule fonction, le nom de table venant d'un énuméré fermé — sûr précisément
+  parce qu'aucune chaîne extérieure ne peut l'atteindre.
+- **feat(db)** : `rust_decimal` pour les curseurs. Les décoder en `f64` réintroduirait dans le
+  code l'imprécision que `numeric(3,2)` refuse en base.
+
+### Notes
+
+- **Le peuplement vit dans la migration**, pas dans un script à part : ces valeurs ne sont pas
+  des données d'exemple mais des constantes du produit. Une base migrée sans elles laisserait le
+  service incapable de créer un compagnon — panne qui ne se déclarerait qu'au premier
+  utilisateur.
+- **`age_min >= 25` est une contrainte de base, pas une convention.** Le plancher est à 25 et
+  non à 18 : une apparence proche de la limite est exactement la zone qu'aucun classifieur ne
+  tranche de façon fiable, et que ce produit n'a aucune raison d'explorer. Éprouvé par des
+  insertions à 16, 18 et 24 ans, toutes refusées.
+- **La sûreté est structurelle** : si aucune valeur du catalogue n'évoque un mineur, aucune
+  composition ne le peut. La modération porte sur l'ensemble des valeurs possibles, une fois,
+  et non sur chaque compagnon créé.
+
 ## [0.3.0] - 2026-09-05
 
 Phase 1.1 — la persistance. Livrée en deux temps : la couche base, puis la bascule.
@@ -291,6 +321,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.4.0 | 2026-09-05 | 1.2a — catalogues |
 | 0.3.0 | 2026-09-05 | 1.1 — persistance |
 | 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
 | 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |

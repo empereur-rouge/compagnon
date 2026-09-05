@@ -15,6 +15,7 @@
 //! (authentification refusée, hôte injoignable, URL malformée) et gardé par un test, parce que
 //! c'est une propriété de la bibliothèque et non du code de ce projet.
 
+pub mod catalogues;
 pub mod file;
 pub mod utilisateurs;
 
