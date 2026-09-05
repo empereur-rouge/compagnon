@@ -5,6 +5,68 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.9.0] - 2026-09-05
+
+Revue `/simplify` de la phase 1.2. Quatre agents, une cinquantaine de findings. Ce qui suit
+corrige un seul motif, répété cinq fois : **la garantie s'arrêtait au moment précis où elle
+aurait dû porter sur du texte plutôt que sur une forme.**
+
+### Fixed
+
+- **fix(db)** : **la thèse centrale de la phase 1.2 était fausse.** « Si aucune valeur du
+  catalogue n'évoque un mineur, aucune composition ne le peut » reposait sur une prémisse jamais
+  écrite — les tables `ref_*` sont immuables en production — que rien ne rendait vraie.
+  Reproduit : `update ref_tranches_age_apparent set libelle = 'Adolescente de 16 ans'` passait la
+  contrainte `age_min >= 25`, passait les tests, passait la modération, et le prompt disait
+  « Femme, Adolescente de 16 ans ». Le texte éditorial du catalogue est désormais immuable hors
+  migration ; `actif` reste modifiable, pour que le retrait à chaud garde sa force.
+- **fix(personnage)** : l'âge est composé depuis `age_min`, le **nombre contraint**, et non
+  depuis le libellé de la tranche. La contrainte gardait une colonne que la composition ne
+  lisait pas.
+- **fix(db)** : **le mécanisme de plafond légal était branché sur rien.** La jointure filtrait
+  `domaine = 'personnalite'` alors que le seul paramètre marqué `plafonnable_juridiction` est
+  `intensite_suggestive`, de domaine `contenu` : les plafonds ne pouvaient s'appliquer qu'à des
+  paramètres déclarés *non* plafonnables. Une colonne `entre_dans_le_prompt` nomme désormais ce
+  que le domaine servait à déduire.
+- **fix(db)** : **le verrou d'activation ne gardait que l'instant de la transition.** Après
+  validation, les traits et le nom restaient librement modifiables — un compagnon pouvait rester
+  actif en portant un prompt qui ne le décrivait plus, et un nom jamais modéré. C'était le second
+  chemin par lequel du texte non modéré atteignait le modèle. Toute modification révoque
+  désormais la validation et rabat le statut.
+- **fix(db)** : `intensite_suggestive` avait **deux domiciles** — la création en écrivait une
+  copie sur le compagnon alors que la spécification le donne à l'utilisateur. Deux sources de
+  vérité pour le seul paramètre à conséquence légale. Rendu inexprimable.
+- **fix(cli)** : la création n'était **pas transactionnelle**. Un échec au milieu laissait la
+  ligne `personnages` committée, et l'index unique interdisait alors toute nouvelle tentative
+  pour cet utilisateur.
+- **fix(cli)** : les messages d'erreur annonçaient toute défaillance — connexion perdue comprise
+  — comme une faute de frappe, et interpolaient le `Display` de `sqlx` : ce que la migration 0001
+  interdit explicitement, « c'est exactement le chemin par lequel un jeton fuirait ».
+- **fix(test)** : le test du plafond **prouvait le défaut en le prenant pour le comportement
+  attendu** — il posait le plafond sur un paramètre non plafonnable et constatait qu'il
+  s'appliquait.
+
+### Added
+
+- **feat(personnage)** : `activer`, **seul écrivain** de `statut = 'actif'`. Il n'en existait
+  aucun : la validation laissait en `brouillon`, la CLI annonçait « activable », et le seul
+  chemin vers l'état actif était un `psql`. Le verrou construit pour protéger ce geste gardait
+  une porte que le produit ne savait pas ouvrir.
+- **feat(personnage)** : `verifier_integrite`. `prompt_systeme_hash` était écrit et jamais relu —
+  et comparé à lui seul, il n'aurait rien attrapé d'utile, vivant dans la même ligne que le texte
+  qu'il atteste. La comparaison qui a de la valeur est la seconde : recomposer depuis les traits
+  actuels. Elle détecte ce qu'aucune contrainte ne peut voir.
+- **feat(cli)** : `compagnon compagnon activer` et `compagnon compagnon verifier`.
+- **feat(personnage)** : la création inscrit enfin une version `'creation'` à l'historique — la
+  valeur figurait dans la contrainte et n'était jamais produite.
+
+### Removed
+
+- Deux index qui documentaient une intention que le code n'avait pas : zéro balayage mesuré sur
+  les deux, et l'un doublé par l'index de la contrainte unique.
+- Une ligne morte de `ref_termes_interdits` : accentuée, donc jamais rapprochée d'un nom
+  normalisé sans accents.
+
 ## [0.8.0] - 2026-09-05
 
 Phase 1.2e — la création, et le geste d'exploitation qui manquait.
@@ -448,6 +510,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.9.0 | 2026-09-05 | revue 1.2 — garanties sur le texte |
 | 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |
 | 0.7.0 | 2026-09-05 | 1.2d — modération |
 | 0.6.0 | 2026-09-05 | 1.2c — composition du prompt |

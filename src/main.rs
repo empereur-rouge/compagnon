@@ -85,6 +85,16 @@ async fn main() {
             telemetry::init_vers_stderr();
             rendre_compte_compagnon(cli_compagnon::montrer(&config_ou_sortir(), utilisateur).await);
         }
+        ["compagnon", "activer", utilisateur] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(cli_compagnon::activer(&config_ou_sortir(), utilisateur).await);
+        }
+        ["compagnon", "verifier", utilisateur] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(
+                cli_compagnon::verifier(&config_ou_sortir(), utilisateur).await,
+            );
+        }
         ["utilisateur", "age", utilisateur] => {
             telemetry::init_vers_stderr();
             rendre_compte_compagnon(

@@ -69,7 +69,23 @@ pub struct ParametreGradue {
     pub valeur_defaut: Decimal,
     /// Vrai si un pays peut en abaisser le maximum.
     pub plafonnable_juridiction: bool,
+    /// Vrai si ce curseur est repris dans le prompt du compagnon.
+    ///
+    /// Colonne nommée plutôt que déduite du domaine : `domaine = 'personnalite'` servait de
+    /// proxy et excluait par accident le seul paramètre plafonnable.
+    pub entre_dans_le_prompt: bool,
+    /// Qui porte ce curseur — le compagnon, ou l'utilisateur.
+    ///
+    /// `intensite_suggestive` est porté par l'**utilisateur** : c'est un choix de l'humain sur
+    /// ce qu'il veut recevoir, pas un trait du compagnon. En écrire une copie sur le compagnon
+    /// créait deux sources de vérité pour le seul paramètre à conséquence légale.
+    pub porte_par: String,
 }
+
+/// La requête des curseurs, partagée par les deux lecteurs — pool et transaction.
+const REQUETE_PARAMETRES: &str = "select code, libelle, domaine, valeur_defaut,
+            plafonnable_juridiction, entre_dans_le_prompt, porte_par
+       from ref_parametres_gradues where actif order by domaine, code";
 
 /// Les catalogues d'apparence, qui partagent tous la même forme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,12 +209,23 @@ pub async fn fusion_tons(
 ///
 /// [`ErreurBase::Requete`] si la lecture échoue.
 pub async fn parametres_gradues(pool: &PgPool) -> Result<Vec<ParametreGradue>, ErreurBase> {
-    Ok(sqlx::query_as(
-        "select code, libelle, domaine, valeur_defaut, plafonnable_juridiction
-         from ref_parametres_gradues where actif order by domaine, code",
-    )
-    .fetch_all(pool)
-    .await?)
+    Ok(sqlx::query_as(REQUETE_PARAMETRES).fetch_all(pool).await?)
+}
+
+/// Les curseurs actifs, lus depuis une transaction en cours.
+///
+/// Même requête que [`parametres_gradues`] : la création lit le catalogue à l'intérieur de sa
+/// transaction, pour que ce qu'elle pose soit ce qu'elle a lu.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si la lecture échoue.
+pub async fn parametres_gradues_dans(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Vec<ParametreGradue>, ErreurBase> {
+    Ok(sqlx::query_as(REQUETE_PARAMETRES)
+        .fetch_all(&mut **tx)
+        .await?)
 }
 
 /// Le plafond que ce pays impose à ce curseur, s'il en impose un.
