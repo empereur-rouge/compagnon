@@ -38,6 +38,7 @@
 //! | [`horloge`] | temps, en un seul endroit, pour que les tests puissent le figer |
 //! | [`admission`] | ce qu'on retient d'une mise à jour, quelle que soit la porte |
 //! | [`db`] | PostgreSQL : connexion, migrations, file à bail |
+//! | [`personnage`] | les traits d un compagnon, et le prompt qu ils composent |
 //! | [`http`] | routeur, état partagé, sonde de santé |
 //! | [`scrutation`] | réception sans domaine ni TLS, pour éprouver le bot en vrai |
 //! | [`telegram`] | client de l'API Bot : authentification, envoi, découpage |
@@ -54,6 +55,7 @@ pub mod error;
 pub mod fixtures;
 pub mod horloge;
 pub mod http;
+pub mod personnage;
 pub mod scrutation;
 pub mod telegram;
 pub mod telemetry;

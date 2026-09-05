@@ -302,3 +302,160 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
 
     jetable.detruire().await;
 }
+
+/// Compose un compagnon complet en base : apparence, personnalité, curseurs, interaction.
+async fn compagnon_complet(pool: &PgPool, id: Uuid, curseurs: &[(&str, &str)]) {
+    sqlx::query(
+        "insert into personnage_apparence
+            (personnage_id, genre_id, tranche_age_id, morphologie_id, couleur_cheveux_id,
+             longueur_cheveux, couleur_yeux_id, style_vestimentaire_id)
+         select $1,
+                (select id from ref_genres where code = 'femme'),
+                (select id from ref_tranches_age_apparent where code = '25_34'),
+                (select id from ref_morphologies where code = 'elancee'),
+                (select id from ref_couleurs_cheveux where code = 'brun'),
+                'mi_longs',
+                (select id from ref_couleurs_yeux where code = 'vert'),
+                (select id from ref_styles_vestimentaires where code = 'decontracte')",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("apparence");
+
+    poser_archetype(pool, id, "timide", "principal", None)
+        .await
+        .expect("principal");
+    poser_archetype(pool, id, "dominant", "secondaire", Some(1))
+        .await
+        .expect("secondaire 1");
+
+    sqlx::query(
+        "insert into personnage_tons (personnage_id, ton_id, role)
+         select $1, id, 'principal' from ref_tons where code = 'tendre'",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("ton principal");
+
+    for (code, valeur) in curseurs {
+        sqlx::query(
+            "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
+             values ($1, $2, $3::numeric)",
+        )
+        .bind(id)
+        .bind(code)
+        .bind(valeur)
+        .execute(pool)
+        .await
+        .expect("curseur");
+    }
+
+    sqlx::query(
+        "insert into personnage_parametres_interaction (personnage_id, longueur_reponse)
+         values ($1, 'moyenne')",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .expect("interaction");
+}
+
+#[tokio::test]
+async fn un_compagnon_en_base_compose_son_prompt_avec_fusion_et_plafond() {
+    let (jetable, base) = deux_compagnons().await;
+    compagnon_complet(
+        base.pool(),
+        COMPAGNON_A,
+        &[
+            ("humour", "0.70"),
+            ("affection", "0.90"),
+            ("assurance", "0.30"),
+        ],
+    )
+    .await;
+
+    // Un plafond de juridiction sur l'affection, pour voir qu'il s'applique.
+    sqlx::query(
+        "insert into ref_plafonds_juridiction (code_pays, parametre_code, valeur_max, source_legale)
+         values ('XX', 'affection', 0.30, 'essai')",
+    )
+    .execute(base.pool())
+    .await
+    .expect("plafond");
+
+    let sans_plafond = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("FR"))
+        .await
+        .expect("chargement");
+    let avec_plafond = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("XX"))
+        .await
+        .expect("chargement");
+
+    println!("=============== PROMPT, pays sans plafond ===============");
+    let prompt = compagnon::personnage::composer(&sans_plafond);
+    println!("{}", prompt.texte);
+
+    // La fusion timide + dominant est au catalogue : elle doit avoir été résolue à la lecture.
+    assert!(
+        prompt.texte.contains("Yandere"),
+        "la fusion du catalogue n'a pas été résolue"
+    );
+    assert!(
+        !prompt.texte.contains("réservé au premier abord"),
+        "la fusion doit remplacer les descriptions simples"
+    );
+
+    println!("=============== dosage, pays AVEC plafond ===============");
+    for curseur in &avec_plafond.curseurs {
+        println!(
+            "  {:12} effectif {} {}",
+            curseur.code,
+            curseur.valeur,
+            curseur
+                .avant_plafond
+                .map_or_else(String::new, |avant| format!("(choisi {avant}, plafonné)"))
+        );
+    }
+    let affection = avec_plafond
+        .curseurs
+        .iter()
+        .find(|c| c.code == "affection")
+        .expect("le curseur est chargé");
+    assert_eq!(
+        affection.valeur,
+        rust_decimal::Decimal::new(30, 2),
+        "le plafond du pays doit abaisser la valeur effective"
+    );
+    assert_eq!(
+        affection.avant_plafond,
+        Some(rust_decimal::Decimal::new(90, 2))
+    );
+
+    // Et le prompt change en conséquence : le palier passe d'« énormément » à « peu ».
+    let prompt_plafonne = compagnon::personnage::composer(&avec_plafond);
+    println!(
+        "\naffection sans plafond : {}",
+        extraire_ligne(&prompt.texte, "affection")
+    );
+    println!(
+        "affection avec plafond : {}",
+        extraire_ligne(&prompt_plafonne.texte, "affection")
+    );
+    assert_ne!(
+        prompt.empreinte, prompt_plafonne.empreinte,
+        "un plafond qui change le palier doit changer le prompt, donc son empreinte"
+    );
+
+    jetable.detruire().await;
+}
+
+/// La ligne de dosage d'un curseur, pour rendre la sortie lisible.
+fn extraire_ligne(texte: &str, code: &str) -> String {
+    texte
+        .lines()
+        .find(|l| l.contains(code))
+        .unwrap_or("(absente)")
+        .trim()
+        .to_owned()
+}

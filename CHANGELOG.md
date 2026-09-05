@@ -5,6 +5,41 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.6.0] - 2026-09-05
+
+Phase 1.2c — la composition du prompt.
+
+### Added
+
+- **feat(personnage)** : `composer` produit le prompt système à partir des traits, dans l'ordre
+  du document — identité, personnalité, curseurs plafonnés, registre, puis **règles fixes en
+  dernier**. L'ordre n'est pas cosmétique : un modèle accorde plus de poids à ce qui vient en
+  dernier, et aucune valeur de paramètre ne doit pouvoir contredire ces règles.
+- **feat(personnage)** : `regles`, les quatre règles que rien n'assouplit. Les deux premières
+  sont des interdits, les deux suivantes décrivent une conduite — et la distinction entre elles
+  est celle du **temps** : « ravi de parler à son humain » porte sur l'instant présent, « pas de
+  reproche sur une absence » sur le passé. « Je suis content que tu sois là » respecte les deux ;
+  « j'ai cru que tu m'avais oublié » viole la seconde en ayant l'air d'une variante de la
+  première.
+- **feat(personnage)** : résolution des fusions telle que le document la définit — la fusion
+  **remplace** l'addition des deux descriptions, consomme le principal et le premier secondaire,
+  et le second s'ajoute par-dessus.
+- **feat(personnage)** : les plafonds de juridiction sont appliqués **dans la requête**, pas
+  après coup — une vérification qu'une évolution du code applicatif ne peut pas contourner.
+- **feat(personnage)** : empreinte SHA-256 du prompt, pour détecter un écart introduit hors du
+  processus.
+
+### Notes
+
+- **Les curseurs deviennent des paliers, pas des nombres.** « Humour : 0,63 » demande au modèle
+  d'interpréter une échelle qu'il ne connaît pas, et deux valeurs voisines produiraient des
+  réponses arbitrairement différentes. Cinq paliers nommés rendent la composition stable : un
+  curseur qui glisse de 0,61 à 0,64 ne change pas le prompt, donc ne redemande pas de modération.
+- **`composer` est une fonction pure**, séparée de la lecture en base. C'est ce qui permet de
+  **lire le prompt produit** dans la sortie des tests — c'est le texte qui compte, pas le fait
+  que la fonction rende `Ok`. Deux défauts n'ont été trouvés que par cette lecture : une espace
+  parasite avant une virgule, et le code interne `mi_longs` livré tel quel au modèle.
+
 ## [0.5.0] - 2026-09-05
 
 Phase 1.2b — les tables du compagnon, et ce que la base refuse d'en faire.
@@ -348,6 +383,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.6.0 | 2026-09-05 | 1.2c — composition du prompt |
 | 0.5.0 | 2026-09-05 | 1.2b — tables du compagnon |
 | 0.4.0 | 2026-09-05 | 1.2a — catalogues |
 | 0.3.0 | 2026-09-05 | 1.1 — persistance |
