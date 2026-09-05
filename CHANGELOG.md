@@ -5,6 +5,41 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.7.0] - 2026-09-05
+
+Phase 1.2d — la modération, et ce qu'elle protège réellement.
+
+### Added
+
+- **feat(moderation)** : examen du **nom**, seul texte libre d'un compagnon. Tout le reste vient
+  de catalogues clos : une apparence ne peut pas évoquer un mineur parce que la base refuse
+  toute tranche sous 25 ans, une personnalité ne peut pas dériver parce que les descriptions
+  sont écrites au catalogue. Le nom est l'unique interstice, et c'est le seul endroit à examiner.
+- **feat(moderation)** : `ref_termes_interdits`, une **table** et non une constante — un
+  signalement arrive un dimanche soir, et attendre une recompilation pour y répondre serait
+  absurde. L'inverse vaut aussi : un terme trop large se retire sans déploiement, ce qu'un test
+  éprouve.
+- **feat(personnage)** : `valider` compose, examine et inscrit **d'un seul tenant**. Séparer ces
+  gestes laisserait exister un instant où un prompt est écrit sans que la modération se soit
+  prononcée — précisément l'état que le verrou d'activation existe pour empêcher.
+- **feat(personnage)** : l'historique versionné, avec un instantané complet construit par la
+  base en une requête. Un refus y est inscrit comme une validation : il fait partie de ce qu'on
+  doit pouvoir raconter.
+
+### Notes
+
+- **Ce qui est structurel et ce qui ne l'est pas.** Les chiffres sont refusés dans un nom sans
+  exception, ce qui élimine d'un coup toute la classe « lea12ans » sans avoir à en énumérer les
+  graphies. Le rapprochement de termes, lui, est heuristique et le reste : il rate les graphies
+  détournées, les diminutifs, les langues absentes de la liste. **Ce module est la première
+  ligne, pas le classifieur du produit** — celui-ci arrive avec le client de modèle en 1.3.
+- **Les termes courts ne sont cherchés que comme mots entiers.** « mere » en sous-chaîne
+  refuserait « Meredith », « ado » refuserait « Adolphe ». Un faux refus n'est pas gratuit : il
+  fait échouer quelqu'un qui n'a rien fait, sur son premier geste dans le produit. Seize noms
+  ordinaires sont éprouvés comme passant, dont ceux-là.
+- **Le message rendu ne nomme jamais le terme reconnu** — le dire apprendrait quoi contourner.
+  Il part au journal d'exploitation.
+
 ## [0.6.0] - 2026-09-05
 
 Phase 1.2c — la composition du prompt.
@@ -383,6 +418,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.7.0 | 2026-09-05 | 1.2d — modération |
 | 0.6.0 | 2026-09-05 | 1.2c — composition du prompt |
 | 0.5.0 | 2026-09-05 | 1.2b — tables du compagnon |
 | 0.4.0 | 2026-09-05 | 1.2a — catalogues |

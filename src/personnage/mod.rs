@@ -18,6 +18,7 @@
 //! qu'il serait pénible de fabriquer en base, et de **lire** le prompt produit dans la sortie
 //! des tests. C'est le texte qui compte, pas le fait que la fonction rende `Ok`.
 
+pub mod moderation;
 pub mod regles;
 
 use rust_decimal::Decimal;
@@ -456,6 +457,129 @@ async fn charger_curseurs(
             }
         })
         .collect())
+}
+
+/// Soumet un compagnon à la modération, et inscrit ce qu'elle décide.
+///
+/// # Ce que cette fonction fait, et pourquoi d'un seul tenant
+///
+/// Elle compose, elle examine, elle écrit — dans **une seule transaction**. Séparer ces gestes
+/// laisserait exister un instant où un prompt est écrit sans que la modération se soit
+/// prononcée, et c'est précisément l'état que le verrou d'activation existe pour empêcher.
+///
+/// Accepté : le prompt et son empreinte sont écrits avec `valide_le`, et le compagnon devient
+/// activable. Refusé : le statut passe à `rejete`, aucun prompt n'est écrit, et l'utilisateur
+/// doit modifier ses choix.
+///
+/// Dans les deux cas une version est inscrite à l'historique : un refus fait partie de ce qu'on
+/// doit pouvoir raconter.
+///
+/// # Errors
+///
+/// [`ErreurBase`] si une lecture ou une écriture échoue. Aucune écriture n'est conservée en cas
+/// d'erreur — c'est l'objet de la transaction.
+pub async fn valider(
+    pool: &PgPool,
+    personnage_id: Uuid,
+    code_pays: Option<&str>,
+    modele_cible: &str,
+) -> Result<moderation::Verdict, ErreurBase> {
+    let traits = charger(pool, personnage_id, code_pays).await?;
+    let verdict = moderation::examiner_nom(pool, &traits.nom).await?;
+
+    let mut tx = pool.begin().await?;
+
+    let (statut, raison) = match &verdict {
+        moderation::Verdict::Accepte => {
+            let prompt = composer(&traits);
+            sqlx::query(
+                "insert into personnage_parametres_modele
+                    (personnage_id, prompt_systeme_genere, prompt_systeme_hash, modele_cible,
+                     valide_le)
+                 values ($1, $2, $3, $4, now())
+                 on conflict (personnage_id) do update
+                    set prompt_systeme_genere = excluded.prompt_systeme_genere,
+                        prompt_systeme_hash   = excluded.prompt_systeme_hash,
+                        modele_cible          = excluded.modele_cible,
+                        version_prompt        = personnage_parametres_modele.version_prompt + 1,
+                        valide_le             = now()",
+            )
+            .bind(personnage_id)
+            .bind(&prompt.texte)
+            .bind(&prompt.empreinte)
+            .bind(modele_cible)
+            .execute(&mut *tx)
+            .await?;
+            ("brouillon", "moderation_validation")
+        }
+        moderation::Verdict::Refuse(motif) => {
+            // Le terme reconnu part au journal d'exploitation, jamais à l'utilisateur.
+            tracing::warn!(
+                compagnon = %personnage_id,
+                motif = ?motif,
+                "composition refusée par la modération"
+            );
+            // Un prompt existant est retiré : un compagnon rejeté ne doit rien conserver
+            // d'activable, y compris ce qu'une validation précédente avait laissé.
+            sqlx::query("delete from personnage_parametres_modele where personnage_id = $1")
+                .bind(personnage_id)
+                .execute(&mut *tx)
+                .await?;
+            ("rejete", "moderation_rejet")
+        }
+    };
+
+    sqlx::query("update personnages set statut = $2 where id = $1")
+        .bind(personnage_id)
+        .bind(statut)
+        .execute(&mut *tx)
+        .await?;
+
+    inscrire_version(&mut tx, personnage_id, raison).await?;
+    tx.commit().await?;
+    Ok(verdict)
+}
+
+/// Inscrit une version à l'historique, avec l'instantané complet du compagnon.
+///
+/// L'instantané est construit **par la base**, en une requête : le reconstituer en Rust
+/// demanderait de relire chaque table et de n'en oublier aucune — or c'est exactement ce qu'un
+/// historique existe pour rendre inutile.
+async fn inscrire_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    personnage_id: Uuid,
+    raison: &str,
+) -> Result<(), ErreurBase> {
+    sqlx::query(
+        "insert into personnage_historique_versions
+            (personnage_id, version, modifie_par, raison, etat_complet)
+         select p.id,
+                coalesce((select max(version) + 1 from personnage_historique_versions
+                           where personnage_id = p.id), 1),
+                p.utilisateur_id,
+                $2,
+                jsonb_build_object(
+                    'personnage', to_jsonb(p.*),
+                    'apparence',  (select to_jsonb(a.*) from personnage_apparence a
+                                    where a.personnage_id = p.id),
+                    'archetypes', (select jsonb_agg(to_jsonb(x.*)) from personnage_archetypes x
+                                    where x.personnage_id = p.id),
+                    'tons',       (select jsonb_agg(to_jsonb(t.*)) from personnage_tons t
+                                    where t.personnage_id = p.id),
+                    'curseurs',   (select jsonb_agg(to_jsonb(g.*))
+                                     from personnage_parametres_gradues g
+                                    where g.personnage_id = p.id),
+                    'interaction',(select to_jsonb(i.*) from personnage_parametres_interaction i
+                                    where i.personnage_id = p.id),
+                    'modele',     (select to_jsonb(m.*) from personnage_parametres_modele m
+                                    where m.personnage_id = p.id))
+           from personnages p where p.id = $1",
+    )
+    .bind(personnage_id)
+    .bind(raison)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

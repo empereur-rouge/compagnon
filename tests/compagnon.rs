@@ -459,3 +459,150 @@ fn extraire_ligne(texte: &str, code: &str) -> String {
         .trim()
         .to_owned()
 }
+
+#[tokio::test]
+async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
+    let (jetable, base) = deux_compagnons().await;
+    compagnon_complet(base.pool(), COMPAGNON_A, &[("humour", "0.60")]).await;
+    compagnon_complet(base.pool(), COMPAGNON_B, &[("humour", "0.60")]).await;
+
+    // B porte un nom qui ne peut pas être retenu.
+    sqlx::query("update personnages set nom = 'Ma petite fille' where id = $1")
+        .bind(COMPAGNON_B)
+        .execute(base.pool())
+        .await
+        .expect("renommage");
+
+    // --- Le compagnon dont le nom passe ---
+    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_A, Some("FR"), "modele-x")
+        .await
+        .expect("validation");
+    println!("compagnon « Léa »            -> {verdict:?}");
+    assert_eq!(verdict, compagnon::personnage::moderation::Verdict::Accepte);
+
+    let (prompt, empreinte, valide): (String, String, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as(
+            "select prompt_systeme_genere, prompt_systeme_hash, valide_le
+               from personnage_parametres_modele where personnage_id = $1",
+        )
+        .bind(COMPAGNON_A)
+        .fetch_one(base.pool())
+        .await
+        .expect("prompt écrit");
+    println!(
+        "  prompt de {} caractères, empreinte {}…",
+        prompt.len(),
+        &empreinte[..12]
+    );
+    println!("  validé le {valide:?}");
+    assert!(
+        valide.is_some(),
+        "le prompt doit porter sa date de validation"
+    );
+
+    // Le verrou s'ouvre.
+    sqlx::query("update personnages set statut = 'actif' where id = $1")
+        .bind(COMPAGNON_A)
+        .execute(base.pool())
+        .await
+        .expect("l'activation doit être permise");
+    println!("  activation -> permise");
+
+    // --- Le compagnon dont le nom ne passe pas ---
+    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_B, Some("FR"), "modele-x")
+        .await
+        .expect("validation");
+    println!("\ncompagnon « Ma petite fille » -> {verdict:?}");
+    assert!(matches!(
+        verdict,
+        compagnon::personnage::moderation::Verdict::Refuse(_)
+    ));
+
+    let prompts: i64 = sqlx::query_scalar(
+        "select count(*) from personnage_parametres_modele where personnage_id = $1",
+    )
+    .bind(COMPAGNON_B)
+    .fetch_one(base.pool())
+    .await
+    .expect("comptage");
+    println!("  prompts écrits : {prompts} (aucun ne doit l'être)");
+    assert_eq!(
+        prompts, 0,
+        "un compagnon refusé ne doit rien conserver d'activable"
+    );
+
+    let statut: String = sqlx::query_scalar("select statut from personnages where id = $1")
+        .bind(COMPAGNON_B)
+        .fetch_one(base.pool())
+        .await
+        .expect("lecture");
+    println!("  statut -> {statut}");
+    assert_eq!(statut, "rejete");
+
+    let activation = sqlx::query("update personnages set statut = 'actif' where id = $1")
+        .bind(COMPAGNON_B)
+        .execute(base.pool())
+        .await;
+    println!(
+        "  activation -> {}",
+        if activation.is_err() {
+            "REFUSÉE"
+        } else {
+            "permise"
+        }
+    );
+    assert!(
+        activation.is_err(),
+        "un compagnon refusé ne doit pas pouvoir s'activer"
+    );
+
+    // --- L'historique raconte les deux ---
+    let versions: Vec<(String, i32)> = sqlx::query_as(
+        "select raison, version from personnage_historique_versions order by modifie_le",
+    )
+    .fetch_all(base.pool())
+    .await
+    .expect("historique");
+    println!("\nhistorique :");
+    for (raison, version) in &versions {
+        println!("  v{version} : {raison}");
+    }
+    assert_eq!(
+        versions.len(),
+        2,
+        "chaque décision doit laisser une version"
+    );
+    assert!(versions.iter().any(|(r, _)| r == "moderation_validation"));
+    assert!(
+        versions.iter().any(|(r, _)| r == "moderation_rejet"),
+        "un refus se raconte aussi"
+    );
+
+    // L'instantané contient bien tout le compagnon.
+    let etat: serde_json::Value = sqlx::query_scalar(
+        "select etat_complet from personnage_historique_versions
+          where personnage_id = $1 order by version desc limit 1",
+    )
+    .bind(COMPAGNON_A)
+    .fetch_one(base.pool())
+    .await
+    .expect("instantané");
+    let cles: Vec<&String> = etat.as_object().expect("objet").keys().collect();
+    println!("\ninstantané : {cles:?}");
+    for attendu in [
+        "personnage",
+        "apparence",
+        "archetypes",
+        "tons",
+        "curseurs",
+        "interaction",
+        "modele",
+    ] {
+        assert!(
+            etat.get(attendu).is_some(),
+            "l'instantané n'a pas de « {attendu} »"
+        );
+    }
+
+    jetable.detruire().await;
+}
