@@ -5,6 +5,65 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.3.0] - 2026-09-05
+
+Phase 1.1 — la persistance. Livrée en deux temps : la couche base, puis la bascule.
+
+### Added
+
+- **feat(db)** : PostgreSQL, avec `sqlx` et des migrations versionnées embarquées dans le
+  binaire. Le conteneur livré ne contient pas l'arbre source ; lire les migrations sur disque
+  aurait produit un service tournant sur un schéma incomplet plutôt qu'un refus franc.
+- **feat(db)** : schéma du noyau — `utilisateurs`, `personnages`, `conversations`, `messages`,
+  `historique_consentement`, `file_messages`. La cardinalité **un utilisateur → un compagnon →
+  une conversation** est tenue par des index uniques partiels, pas par une règle applicative.
+- **feat(db)** : file de traitement **à bail**. Un état « en cours » nu ne survit pas à la mort
+  du worker qui l'a posé : la tâche reste prise par personne et rien ne la reprend. Le bail est
+  une échéance, et la requête de prise inclut les baux expirés dans ses candidats — aucun
+  nettoyage périodique n'est nécessaire.
+- **feat(config)** : `DATABASE_URL`, traitée comme un secret. Le `Debug` ne montre que schéma,
+  utilisateur, hôte et base — savoir où l'on est connecté est la première question d'un
+  incident, le mot de passe n'a rien à y faire.
+- **test** : `tests/harnais/base.rs` — une base PostgreSQL **neuve par test**, migrée par le
+  code de production puis détruite. Ni transaction annulée (le service ouvre son propre pool et
+  ne verrait rien) ni schéma partagé (les migrations se poseraient au mauvais endroit).
+- **outil** : `scripts/base-de-test.sh` démarre le PostgreSQL de test sur le port 5433 — jamais
+  5432, pour qu'une base de développement installée sur la machine ne soit pas atteinte par une
+  suite qui crée et détruit des bases.
+
+- **feat(worker)** : **quatre consommateurs concurrents** au lieu d'un seul. L'ordre reste tenu
+  là où il compte — dans une conversation — par la requête de prise, qui écarte tout
+  utilisateur déjà servi ailleurs. Le worker n'a donc aucune synchronisation à faire : la base
+  la lui donne. Sans cela, cent personnes écrivant dans la même minute feraient attendre la
+  centième cinq minutes dès que la réponse coûtera un appel de modèle, sans qu'aucune erreur ne
+  soit journalisée.
+- **feat(worker)** : la vérification d'âge barre l'accès au moteur, dès cette phase. Un refus
+  produit un message qui dit ce qui manque, jamais un silence — un silence est indiscernable
+  d'une panne.
+- **feat(db)** : la file est **bornée par utilisateur** (32 tâches). Une table n'est pas bornée
+  par construction, contrairement au canal de la phase 0, et une borne globale se retourne
+  contre les mauvaises personnes : un seul émetteur en rafale la remplirait et ferait refuser
+  tous les autres.
+- **feat(deploiement)** : service `base` dans `compose.yaml`, sans port publié, avec sonde
+  `pg_isready` dont le service attend le vert — le service migre au démarrage et doit trouver
+  une base qui répond, pas seulement un conteneur lancé.
+
+### Changed
+
+- **change(app)** : **ce que l'extinction garantit a changé, et dans le bon sens.** Elle ne
+  vide plus la file : ce qu'elle contient survit à l'arrêt et sera repris au démarrage suivant.
+  Elle attend seulement la fin des tâches en cours, pour qu'aucune ne soit reprise au bail et
+  répondue deux fois.
+- **change(http)** : la sonde rend `base_repond` et `taches_en_attente` au lieu des places
+  libres du canal. Une base qui répond avec une file qui enfle est un cas bien plus fréquent
+  qu'une base muette, et les confondre en un seul booléen le rendrait indétectable.
+- **change(admission)** : l'inscription de l'utilisateur et la mise en file sont un seul geste
+  partagé par les deux portes d'entrée, dans cet ordre — la clé étrangère l'impose.
+- **change(test)** : les valeurs d'exemple et la construction de `Config` vivent dans
+  `compagnon::fixtures`, derrière la caractéristique `fixtures`. Elles étaient recopiées dans
+  six fichiers sur deux cibles de compilation — une revue l'avait signalé, et l'ajout d'un seul
+  champ à `Config` a cassé les six le jour même.
+
 ## [0.2.2] - 2026-09-05
 
 ### Infrastructure
@@ -156,6 +215,57 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 - **change(http)** : `file_capacite` est lu sur le canal (`max_capacity`) et non recopié depuis
   la constante — les deux chiffres de la sonde viennent ainsi de la même source.
 
+### Fixed
+
+Trois défauts trouvés par la revue `/simplify` et vérifiés par la mesure avant correction —
+tous trois introduits par les deux commits de cette phase.
+
+- **fix(config)** : `masquer_url` **laissait fuir le mot de passe de la base**. Elle découpait
+  l'URL sur `://` puis sur `@`, une grammaire devinée, et rendait la chaîne verbatim quand elle
+  ne trouvait pas d'`@` — alors que sa documentation affirmait l'inverse. Deux formes que `sqlx`
+  accepte imprimaient le mot de passe dans les journaux de démarrage : `postgres:///?password=…`
+  et une URL dont le nom d'utilisateur contient une arobase. Le rendu est désormais reconstruit
+  à partir des parties analysées par `sqlx` lui-même, donc exhaustif par construction. Cinq
+  formes éprouvées dans `tests/secrets.rs`.
+- **fix(db)** : la sérialisation par utilisateur **ne tenait que par chance**. Elle reposait sur
+  un `pg_try_advisory_xact_lock` placé dans le `WHERE` — forme que PostgreSQL donne en
+  contre-exemple, annotée « danger! ». Mesuré : 200 verrous posés pour réclamer une tâche, et
+  une correction dépendante du plan (six workers servis avec un plan, **un seul** avec l'autre).
+  La course qu'il prétendait fermer a été reproduite. L'invariant est désormais tenu par un
+  index unique partiel, qui vaut quel que soit le plan et le niveau d'isolation.
+- **fix(test)** : le test de la sonde **passait quoi que le service renvoie**. Il comparait deux
+  champs supprimés par ce même commit ; `Value` indexé par une clé absente rend `Null`, donc
+  l'assertion comparait `Null` à `Null`. `Sante` est maintenant réversible et le harnais la rend
+  typée : un champ renommé devient une erreur de compilation.
+- **fix(worker)** : le repos de 25 ms était payé après chaque **succès** — la moitié du cycle
+  mesuré — alors qu'il est indispensable après un **échec**, où son absence fait épuiser les
+  trois tentatives en quelques millisecondes.
+- **fix(db)** : index manquant pour la borne par utilisateur, sur le chemin chaud du webhook.
+  Mesuré : 1,963 ms à 50 000 tâches en attente, contre 0,044 ms avec l'index.
+- **fix(db)** : `assurer` faisait mentir `mis_a_jour_le`. Un `do update` inconditionnel à chaque
+  message déclenchait le trigger d'horodatage, faisant dire à la colonne « dernier message
+  reçu » au lieu de « dernière modification » — c'est-à-dire exactement la colonne d'audit
+  inutilisable que la migration dit vouloir éviter.
+- **fix(test)** : la vérification d'âge, fonctionnalité vedette de cette phase, **n'avait aucun
+  test**. Quatre tests l'écartaient en préambule, aucun ne l'éprouvait. Vérifié comme détectant
+  bien sa suppression.
+
+### Changed (revue)
+
+- **change(worker)** : un type `Equipe` possède les consommateurs. Le lancement et l'extinction
+  étaient recopiés dans les deux portes d'entrée et **avaient déjà divergé** le jour de leur
+  écriture.
+- **change(db)** : `Base::ouvrir` compose connexion et migration — « un `Base` existe » implique
+  « son schéma est à jour », un fait de typage plutôt qu'une convention d'appel.
+- **change(db)** : `ErreurBase::ChargeUtile` remplace un `sqlx::Error::Encode` détourné, qui
+  annonçait « requête refusée par la base » pour une base qui n'avait rien reçu.
+- **change(test)** : le harnais appelle `utilisateurs::verifier_age` au lieu de réécrire son
+  SQL — la fonction de production n'avait aucun appelant pendant que sa copie tournait dans
+  neuf tests, et les deux avaient déjà divergé.
+- **change(http)** : la sonde annonce les consommateurs **encore en vie**, pas la constante.
+- **change(db)** : `#[from]` sur `ErreurBase`, `query_scalar` et `FromRow` — seize recopies de
+  `map_err(ErreurBase::Requete)` masquaient le SQL qu'elles entouraient.
+
 ### Removed
 
 - `horloge::instant`, `http::adresse_liee`, `EtatApp::new` : trois items publics sans appelant
@@ -181,6 +291,7 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.3.0 | 2026-09-05 | 1.1 — persistance |
 | 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
 | 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |
 | 0.2.0 | 2026-09-05 | 0 — réception par scrutation |

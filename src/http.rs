@@ -9,6 +9,7 @@
 //! censé empêcher. Une couche de ce module les rhabille avant qu'elles ne sortent.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -18,18 +19,17 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
-use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::VERSION;
+use crate::db::Base;
 use crate::error::{ApiError, CorpsErreur, DejaConforme, ErrorCode};
 use crate::horloge;
 use crate::telegram::Canal;
-use crate::telegram::types::Recu;
 use crate::webhook;
 
 /// Taille maximale d'un corps de requête.
@@ -52,8 +52,13 @@ const DELAI_REQUETE: Duration = Duration::from_secs(5);
 pub struct EtatApp {
     /// Le canal Telegram, partagé.
     pub canal: Arc<Canal>,
-    /// L'entrée de la file de traitement.
-    pub expediteur: mpsc::Sender<Recu>,
+    /// La base : file de traitement, utilisateurs, et tout ce que la phase 1 y ajoutera.
+    ///
+    /// `PgPool` est interne­ment un `Arc` : cloner l'état à chaque requête reste trois
+    /// incréments atomiques et zéro allocation, comme avec le canal mpsc qu'il remplace.
+    pub base: Base,
+    /// Compteur des consommateurs encore en vie, tenu par l'équipe.
+    pub workers_vivants: Arc<AtomicUsize>,
     /// Quand le service a démarré, en secondes depuis l'époque Unix.
     pub demarre_le: i64,
 }
@@ -177,34 +182,60 @@ const fn code_pour_statut(statut: StatusCode) -> ErrorCode {
 ///
 /// Volontairement pauvre : cette adresse n'est pas authentifiée, elle sert au `HEALTHCHECK` du
 /// conteneur. Rien de ce qu'elle expose n'apprend quoi que ce soit sur les utilisateurs.
-#[derive(Debug, Serialize)]
+/// Réversible — `Serialize` **et** `Deserialize` — plutôt que sérialisable seulement.
+///
+/// C'est ce qui permet à un test de lire des champs typés au lieu d'un blob indexé par chaîne.
+/// La différence n'est pas cosmétique : `Value["file_libre"]` sur un champ supprimé rend `Null`
+/// en silence, et c'est exactement ainsi que le test de cette sonde s'était mis à comparer
+/// `Null` à `Null` — il passait quoi que le service renvoie. Un champ renommé est désormais une
+/// erreur de compilation.
+///
+/// Le prix est deux `String` au lieu de deux `&'static str`, soit deux petites allocations par
+/// appel de `/health` — une route qu'on interroge toutes les trente secondes, pas mille fois
+/// par seconde.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Sante {
     /// `ok` tant que le service répond.
-    pub statut: &'static str,
+    pub statut: String,
     /// Version du binaire.
-    pub version: &'static str,
+    pub version: String,
     /// Secondes écoulées depuis le démarrage.
     pub depuis: i64,
-    /// Places encore libres dans la file de traitement.
+    /// Vrai si la base répond.
     ///
-    /// Un zéro durable est le signal que le worker n'avance plus — l'information la plus utile
-    /// que cette sonde puisse porter.
-    pub file_libre: usize,
-    /// Capacité totale de la file, pour situer `file_libre`.
+    /// La sonde reste à `200` même quand il vaut `false` : le service est joignable, et
+    /// répondre `503` ferait retirer l'instance d'un équilibreur au moment précis où ses
+    /// journaux sont la seule source de diagnostic. C'est le champ qu'un supervision doit
+    /// lire, pas le code HTTP.
+    pub base_repond: bool,
+    /// Nombre de tâches encore à traiter, baux expirés compris.
     ///
-    /// Lue sur le canal et non sur la constante : les deux chiffres viennent ainsi de la même
-    /// source. Recopier la constante ferait mentir la sonde le jour où le canal serait
-    /// construit avec une autre taille, sans que rien ne le signale.
-    pub file_capacite: usize,
+    /// Une valeur qui croît sans redescendre est le signal que les consommateurs n'avancent
+    /// plus — l'information la plus utile que cette sonde puisse porter. `null` si la base
+    /// n'a pas répondu.
+    pub taches_en_attente: Option<i64>,
+    /// Nombre de consommateurs **encore en vie**, pour situer la valeur précédente.
+    ///
+    /// Ce qui tourne, et non ce qui a été lancé. La version précédente recopiait la constante
+    /// — exactement la faute qu'un commentaire de ce fichier interdisait deux lignes plus haut
+    /// avant d'être supprimé avec le code qu'il gardait. Un worker qui meurt doit se voir ici,
+    /// sans quoi la sonde annonce quatre consommateurs devant une file qui n'avance plus.
+    pub workers: usize,
 }
 
 /// Sonde de santé.
 async fn sante(State(etat): State<EtatApp>) -> Json<Sante> {
+    // Deux informations distinctes : la base répond-elle, et la file avance-t-elle. Une base
+    // qui répond avec une file qui enfle est un cas bien plus fréquent qu'une base muette, et
+    // les confondre en un seul booléen le rendrait indétectable.
+    let taches_en_attente = etat.base.taches_en_attente().await.ok();
+    let base_repond = taches_en_attente.is_some();
     Json(Sante {
-        statut: "ok",
-        version: VERSION,
+        statut: "ok".to_owned(),
+        version: VERSION.to_owned(),
         depuis: horloge::maintenant() - etat.demarre_le,
-        file_libre: etat.expediteur.capacity(),
-        file_capacite: etat.expediteur.max_capacity(),
+        base_repond,
+        taches_en_attente,
+        workers: etat.workers_vivants.load(Ordering::Relaxed),
     })
 }

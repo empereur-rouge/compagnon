@@ -1,115 +1,331 @@
-//! Le consommateur de messages entrants.
+//! Les consommateurs de la file, et ce qu'ils font d'une tâche.
 //!
 //! # Pourquoi le webhook ne répond pas lui-même
 //!
-//! Telegram attend une réponse HTTP, et rejoue la mise à jour si elle tarde ou échoue.
-//! Répondre à l'utilisateur *dans* le gestionnaire de webhook marcherait tant que la réponse
-//! est un écho — et cesserait de marcher dès la phase 1, où produire une réponse demande un
-//! appel de modèle, puis, phases 3 à 6, une génération d'image ou de vidéo qui se compte en
-//! minutes. Le découplage est donc mis en place tout de suite, dans sa forme la plus simple,
-//! pour que les phases suivantes remplacent le *contenu* du traitement sans toucher au
-//! transport.
+//! Telegram attend une réponse HTTP et rejoue la mise à jour si elle tarde. Répondre dans le
+//! gestionnaire marcherait tant que la réponse est un écho, et cesserait de marcher dès qu'elle
+//! coûte un appel de modèle — puis une génération d'image qui se compte en minutes.
 //!
-//! # Pourquoi une file bornée
+//! # Concurrence : entre les conversations, pas dans une conversation
 //!
-//! Une file non bornée transforme un afflux en consommation mémoire jusqu'à l'arrêt brutal du
-//! processus. Bornée, elle refuse — et ce refus est exactement le bon signal : le webhook
-//! répond `503`, Telegram rejoue la mise à jour plus tard, rien n'est perdu. La contre-pression
-//! est déléguée à qui sait déjà la gérer.
+//! Plusieurs workers tournent en parallèle. Ce n'était pas le cas en phase 0, où le traitement
+//! sérialisé garantissait gratuitement l'ordre des réponses — et où l'écho coûtait cinquante
+//! millisecondes. Dès qu'une réponse coûte des secondes, ce même sérialisme fait attendre la
+//! centième personne pendant cinq minutes, sans qu'aucune erreur ne soit journalisée : le bot
+//! paraît simplement mort.
 //!
-//! # Ce que cette file n'est pas encore
+//! L'ordre reste tenu là où il compte — dans une conversation — par la requête de prise, qui
+//! écarte tout utilisateur déjà servi ailleurs (voir [`crate::db::file`]). Le worker n'a donc
+//! aucune synchronisation à faire : la base la lui donne.
 //!
-//! Elle vit en mémoire. Un arrêt brutal — `kill -9`, panne de courant — perd ce qu'elle
-//! contient. L'extinction *ordonnée*, elle, la vide entièrement : voir [`crate::app::Prepare::servir`]. La phase 1
-//! remplace ce canal par une file en base à bail, sur le modèle de celle d'`agentbot`, et cette
-//! perte-là disparaît. C'est une limite connue et bornée, pas un oubli.
+//! # Pourquoi une scrutation et pas une notification
+//!
+//! Les workers interrogent la file à intervalle court plutôt que d'être réveillés par un
+//! `LISTEN/NOTIFY`. C'est un compromis assumé pour cette phase : la latence ajoutée est bornée
+//! par `REPOS_MAX` (250 ms), et l'absence de canal de notification retire une pièce mobile au moment
+//! où la file elle-même est neuve. À reprendre quand la latence comptera davantage que la
+//! simplicité — c'est-à-dire quand la réponse ne sera plus un écho.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
+use crate::db::{Base, file, utilisateurs};
+use crate::error::ErrorCode;
 use crate::telegram::Canal;
 use crate::telegram::envoi::Action;
 use crate::telegram::types::Recu;
 
-/// Nombre de messages en attente de traitement au-delà duquel le service refuse.
+/// Nombre de consommateurs lancés en parallèle.
 ///
-/// Dimensionné pour absorber une rafale — un rejeu de Telegram après une coupure — sans
-/// absorber une inondation.
-pub const CAPACITE_FILE: usize = 256;
+/// Quatre plutôt qu'un par cœur : le travail est presque entièrement de l'attente réseau, pas
+/// du calcul. La borne réelle est ailleurs — le débit que Telegram accepte, et le nombre de
+/// connexions du pool.
+pub const WORKERS: usize = 4;
 
-/// Ce que la phase 0 répond, en attendant qu'un personnage réponde à sa place.
+/// Durée du bail posé sur une tâche prise.
 ///
-/// Le texte dit explicitement ce qu'il est. Un écho muet laisserait croire à un personnage
-/// atone ; celui-ci rend visible que le transport marche et que le reste n'existe pas encore.
+/// Généreuse par rapport au coût d'un écho, parce qu'elle doit couvrir le cas le plus lent, pas
+/// le plus fréquent : un bail trop court ferait reprendre par un second worker une tâche que le
+/// premier est encore en train de traiter, et l'utilisateur recevrait deux réponses.
+const BAIL: Duration = Duration::from_secs(120);
+
+/// Nombre de prises au-delà duquel une tâche est abandonnée.
+const TENTATIVES_MAX: i16 = 3;
+
+/// Repos après un échec de tâche, avant de reprendre la boucle.
+///
+/// **Ce n'est pas de la décoration, et sa suppression casse une garantie.** Une tâche qui
+/// échoue est aussitôt reprenable ; sans ce frein, les quatre workers épuisent ses trois
+/// tentatives en quelques millisecondes, et une panne passagère de Telegram — quelques
+/// secondes — suffit à faire abandonner définitivement un message qui serait passé au coup
+/// suivant. Le test de survie l'attrape : sans ce repos, la file finit en `echec` là où elle
+/// devrait finir en `en_attente`.
+///
+/// Il n'est PAS payé après un succès : la file vient alors de prouver qu'elle a du travail, et
+/// dormir y coûtait la moitié du cycle (mesuré : 25 ms sur 50 ms de bout en bout).
+const REPOS_APRES_ECHEC: Duration = Duration::from_millis(25);
+
+/// Repos quand la file est vide. Borne haute de la latence ajoutée par la scrutation.
+const REPOS_MAX: Duration = Duration::from_millis(250);
+
+/// Ce que la phase 1.1 répond, en attendant qu'un compagnon réponde à sa place.
 fn repondre(recu: &Recu) -> String {
     format!(
-        "« {} »\n\n(écho — phase 0 : le transport fonctionne, aucun personnage n'est encore branché)",
+        "« {} »\n\n(écho — phase 1.1 : la file est en base et survit à un arrêt brutal, aucun compagnon n'est encore branché)",
         recu.texte
     )
 }
 
-/// Consomme la file jusqu'à ce qu'elle soit fermée **et** vidée.
+/// Ce que reçoit quelqu'un dont l'âge n'est pas vérifié.
 ///
-/// La boucle s'arrête quand tous les émetteurs ont été relâchés et que le dernier message a
-/// été traité : c'est ce qui rend l'extinction ordonnée sans perte.
-///
-/// # Ordonnancement
-///
-/// Les messages sont traités un par un. C'est volontaire tant que la réponse est immédiate :
-/// cela garantit qu'une personne qui écrit deux fois de suite reçoit ses réponses dans
-/// l'ordre. Dès que produire une réponse coûtera des secondes, il faudra de la concurrence
-/// *entre* conversations en gardant l'ordre *dans* chacune — un changement qui se fera ici,
-/// sans toucher au webhook.
-pub async fn tourner(mut reception: mpsc::Receiver<Recu>, canal: Arc<Canal>) {
-    tracing::info!(capacite = CAPACITE_FILE, "worker démarré");
-    let mut traites: u64 = 0;
+/// Un refus muet serait indiscernable d'une panne — c'est la première friction que la carte des
+/// parcours signale. Le message dit ce qui manque, sans jouer de personnage : la vérification
+/// d'âge est une limite de service, et la présenter autrement serait malhonnête.
+const VERIFICATION_REQUISE: &str = "Avant de commencer, ce service demande une vérification d'âge.\n\n\
+     Elle n'est pas encore disponible — cette phase met en place la persistance. \
+     Reviens quand l'inscription sera ouverte.";
 
-    while let Some(recu) = reception.recv().await {
-        traiter(&canal, &recu).await;
-        traites += 1;
-    }
-
-    tracing::info!(traites, "worker arrêté, file vidée");
+/// Les consommateurs, et ce qui les arrête.
+///
+/// # Pourquoi un type et pas trois valeurs libres
+///
+/// Le lancement et l'extinction étaient recopiés dans les deux portes d'entrée — service
+/// webhook et scrutation — sous la forme d'un `watch::Sender`, d'un `Vec<JoinHandle>` et d'une
+/// constante que chaque appelant devait assembler puis démonter dans le bon ordre. Les deux
+/// copies avaient **déjà divergé** le jour de leur écriture : l'une journalisait le lancement,
+/// l'autre non ; les messages d'échec différaient. Un type rend l'oubli impossible plutôt que
+/// surveillé — c'est le même raisonnement qui a mis l'admission en commun.
+pub struct Equipe {
+    arret: watch::Sender<bool>,
+    taches: Vec<JoinHandle<()>>,
+    /// Décrémenté par chaque worker en sortant, pour que la sonde dise ce qui **tourne** et non
+    /// ce qui a été lancé.
+    vivants: Arc<AtomicUsize>,
 }
 
-/// Traite un message : indication d'activité, puis réponse.
-async fn traiter(canal: &Canal, recu: &Recu) {
-    // L'indication d'activité est un confort : son échec ne doit pas empêcher la réponse.
-    if let Err(erreur) = canal.action(recu.chat_id, Action::Typing).await {
-        tracing::debug!(
-            chat_id = recu.chat_id,
-            %erreur,
-            "indication d'activité non affichée"
-        );
+impl Equipe {
+    /// Lance [`WORKERS`] consommateurs sur cette base.
+    #[must_use]
+    pub fn lancer(base: &Base, canal: &Arc<Canal>) -> Self {
+        let (arret, ecoute) = watch::channel(false);
+        let vivants = Arc::new(AtomicUsize::new(WORKERS));
+        let taches = (0..WORKERS)
+            .map(|numero| {
+                tokio::spawn(tourner(
+                    base.clone(),
+                    Arc::clone(canal),
+                    ecoute.clone(),
+                    numero,
+                    Arc::clone(&vivants),
+                ))
+            })
+            .collect();
+        tracing::info!(workers = WORKERS, "consommateurs lancés");
+        Self {
+            arret,
+            taches,
+            vivants,
+        }
     }
 
-    let texte = repondre(recu);
-    match canal.envoyer_texte(recu.chat_id, &texte).await {
-        Ok(identifiants) => tracing::info!(
-            chat_id = recu.chat_id,
-            message_id = recu.message_id,
-            morceaux = identifiants.len(),
-            "réponse envoyée"
-        ),
+    /// Le nombre de consommateurs encore en vie, partageable avec la sonde.
+    #[must_use]
+    pub fn vivants(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.vivants)
+    }
+
+    /// Demande l'arrêt et attend la fin des tâches en cours, sous une borne.
+    ///
+    /// Attend chaque worker l'un après l'autre plutôt qu'avec un `join_all` : ils sortent tous
+    /// sur le même signal, donc l'attente totale est celle du plus lent dans les deux cas — et
+    /// cela évite d'ajouter une dépendance pour une seule ligne.
+    pub async fn eteindre(self, delai: Duration) {
+        tracing::info!(delai_max = ?delai, "fin des tâches en cours");
+        let _ = self.arret.send(true);
+
+        let attente = async {
+            let mut interrompus = 0_usize;
+            for tache in self.taches {
+                if tache.await.is_err() {
+                    interrompus += 1;
+                }
+            }
+            interrompus
+        };
+        match tokio::time::timeout(delai, attente).await {
+            Ok(0) => tracing::info!("tâches en cours terminées, arrêt propre"),
+            Ok(interrompus) => {
+                tracing::error!(interrompus, "des workers se sont interrompus anormalement");
+            }
+            // Ce qui reste en file survit à l'arrêt : la borne ne perd rien, elle empêche
+            // seulement un worker bloqué de retenir le processus.
+            Err(_) => tracing::error!(
+                delai = ?delai,
+                "des tâches en cours n'ont pas fini ; elles seront reprises au bail"
+            ),
+        }
+    }
+}
+
+/// Consomme la file jusqu'à ce que l'arrêt soit demandé.
+///
+/// Termine la tâche en cours avant de rendre la main : une tâche interrompue serait reprise par
+/// le bail, mais l'utilisateur recevrait sa réponse deux fois.
+async fn tourner(
+    base: Base,
+    canal: Arc<Canal>,
+    mut arret: watch::Receiver<bool>,
+    numero: usize,
+    vivants: Arc<AtomicUsize>,
+) {
+    tracing::debug!(numero, "worker démarré");
+    let mut traites: u64 = 0;
+
+    loop {
+        if *arret.borrow() {
+            break;
+        }
+
+        // Un seul point d'attente pour toute la boucle : chaque branche dit combien de temps
+        // se reposer, et l'attente est faite une fois, au même endroit, toujours interruptible.
+        let repos = match file::prendre(base.pool(), BAIL).await {
+            Ok(Some(tache)) => {
+                let issue = traiter(&base, &canal, &tache).await;
+                traites += 1;
+                match issue {
+                    // Rien à attendre : la file vient de prouver qu'elle a du travail.
+                    Issue::Close => continue,
+                    Issue::Echouee => REPOS_APRES_ECHEC,
+                }
+            }
+            // Rien de prenable : soit la file est vide, soit tout ce qu'elle contient appartient
+            // à des utilisateurs déjà servis ailleurs.
+            Ok(None) => REPOS_MAX,
+            Err(erreur) => {
+                tracing::error!(numero, %erreur, "file inaccessible");
+                REPOS_MAX
+            }
+        };
+
+        tokio::select! {
+            biased;
+            _ = arret.changed() => break,
+            () = tokio::time::sleep(repos) => {}
+        }
+    }
+
+    vivants.fetch_sub(1, Ordering::Relaxed);
+    tracing::debug!(numero, traites, "worker arrêté");
+}
+
+/// Ce qu'il est advenu d'une tâche traitée, du seul point de vue qui intéresse la boucle.
+enum Issue {
+    /// Close, quelle qu'en soit la raison — succès, ou refus définitif de Telegram.
+    Close,
+    /// Remise en file : la boucle doit freiner avant de la reprendre.
+    Echouee,
+}
+
+/// Traite une tâche prise, et la rend à la file dans tous les cas.
+async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
+    let Ok(recu) = serde_json::from_value::<Recu>(tache.charge_utile.clone()) else {
+        tracing::error!(
+            tache = %tache.id,
+            code = ErrorCode::TacheIllisible.code(),
+            "charge utile illisible, tâche abandonnée"
+        );
+        rendre_en_echec(base, tache, ErrorCode::TacheIllisible).await;
+        return Issue::Echouee;
+    };
+
+    // La vérification d'âge est demandée ici et non à l'entrée : c'est le worker qui parle à
+    // l'utilisateur, et un refus doit produire une réponse plutôt qu'un silence. En phase 1.3,
+    // c'est au même endroit qu'elle empêchera l'appel au modèle.
+    let verifie = match utilisateurs::age_verifie(base.pool(), recu.utilisateur_id).await {
+        Ok(verifie) => verifie,
         Err(erreur) => {
-            // Le niveau distingue ce qui appelle une reprise de ce qui est définitif : un
-            // utilisateur qui bloque le bot n'est pas un incident.
+            tracing::error!(tache = %tache.id, %erreur, "vérification d'âge impossible");
+            rendre_en_echec(base, tache, ErrorCode::Interne).await;
+            return Issue::Echouee;
+        }
+    };
+
+    let texte = if verifie {
+        repondre(&recu)
+    } else {
+        tracing::info!(
+            chat_id = recu.chat_id,
+            "âge non vérifié, accès au moteur refusé"
+        );
+        VERIFICATION_REQUISE.to_owned()
+    };
+
+    // L'indication d'activité est un confort : son échec ne doit pas empêcher la réponse.
+    if let Err(erreur) = canal.action(recu.chat_id, Action::Typing).await {
+        tracing::debug!(chat_id = recu.chat_id, %erreur, "indication d'activité non affichée");
+    }
+
+    match canal.envoyer_texte(recu.chat_id, &texte).await {
+        Ok(identifiants) => {
+            tracing::info!(
+                chat_id = recu.chat_id,
+                message_id = recu.message_id,
+                morceaux = identifiants.len(),
+                "réponse envoyée"
+            );
+            clore(base, tache, "tâche traitée mais non close").await;
+            Issue::Close
+        }
+        Err(erreur) => {
             if erreur.merite_une_reprise() {
                 tracing::warn!(
                     chat_id = recu.chat_id,
+                    tentative = tache.tentatives,
                     attente = ?erreur.attendre(),
                     %erreur,
-                    "réponse non envoyée, reprise justifiée"
+                    "réponse non envoyée, tâche remise en file"
                 );
+                rendre_en_echec(base, tache, ErrorCode::EnvoiImpossible).await;
+                Issue::Echouee
             } else {
-                tracing::info!(
-                    chat_id = recu.chat_id,
-                    %erreur,
-                    "réponse abandonnée, refus définitif de Telegram"
-                );
+                // Un utilisateur qui bloque le bot n'est pas un incident, et réessayer
+                // referait exactement la même erreur : la tâche est close, pas reprise.
+                tracing::info!(chat_id = recu.chat_id, %erreur, "refus définitif de Telegram");
+                clore(base, tache, "tâche abandonnée mais non close").await;
+                Issue::Close
             }
         }
+    }
+}
+
+/// Clôt une tâche, en journalisant si même cela échoue.
+///
+/// Pendant symétrique de [`rendre_en_echec`] : sans lui, le même geste était écrit deux fois
+/// avec deux messages divergents, et un lecteur cherchait un `clore` qui n'existait pas.
+///
+/// Si la clôture échoue, la tâche sera reprise au bail et renverra la même réponse. C'est le
+/// seul point où un doublon reste possible, et il vaut mieux qu'une réponse perdue.
+async fn clore(base: &Base, tache: &file::Tache, motif: &'static str) {
+    if let Err(erreur) = file::terminer(base.pool(), tache.id).await {
+        tracing::error!(tache = %tache.id, %erreur, motif);
+    }
+}
+
+/// Rend une tâche en échec, en journalisant si même cela échoue.
+async fn rendre_en_echec(base: &Base, tache: &file::Tache, code: ErrorCode) {
+    if let Err(erreur) = file::echouer(
+        base.pool(),
+        tache.id,
+        i32::from(code.code()),
+        TENTATIVES_MAX,
+    )
+    .await
+    {
+        tracing::error!(tache = %tache.id, %erreur, "tâche en échec et non rendue");
     }
 }
 
@@ -133,35 +349,28 @@ mod tests {
     fn l_echo_reprend_le_texte_et_annonce_ce_qu_il_est() {
         let reponse = repondre(&recu_de("salut, tu fais quoi ?"));
         println!("réponse produite :\n---\n{reponse}\n---");
-        assert!(
-            reponse.contains("salut, tu fais quoi ?"),
-            "le texte doit être repris"
-        );
-        assert!(reponse.contains("phase 0"), "l'écho doit dire ce qu'il est");
+        assert!(reponse.contains("salut, tu fais quoi ?"));
+        assert!(reponse.contains("phase 1.1"));
     }
 
-    #[tokio::test]
-    async fn la_file_bornee_refuse_au_dela_de_sa_capacite() {
-        let (expediteur, mut reception) = mpsc::channel::<Recu>(CAPACITE_FILE);
+    #[test]
+    fn un_recu_survit_a_un_aller_retour_par_la_base() {
+        // La charge utile transite en `jsonb` : ce qui ressort doit être ce qui est entré,
+        // sinon une tâche reprise après un redémarrage répondrait à côté.
+        let avant = recu_de("un aller-retour en jsonb, avec des accents et un emoji 🙂");
+        let json = serde_json::to_value(&avant).expect("Recu sérialisable");
+        println!("charge utile : {json}");
+        let apres: Recu = serde_json::from_value(json).expect("Recu relisible");
+        println!("texte relu   : {}", apres.texte);
+        assert_eq!(apres.texte, avant.texte);
+        assert_eq!(apres.chat_id, avant.chat_id);
+        assert_eq!(apres.utilisateur_id, avant.utilisateur_id);
+        assert_eq!(apres.message_id, avant.message_id);
+    }
 
-        let mut acceptes = 0;
-        let mut refuses = 0;
-        for numero in 0..CAPACITE_FILE + 10 {
-            match expediteur.try_send(recu_de(&format!("message {numero}"))) {
-                Ok(()) => acceptes += 1,
-                Err(_) => refuses += 1,
-            }
-        }
-        println!("capacité {CAPACITE_FILE} : {acceptes} acceptés, {refuses} refusés");
-        assert_eq!(acceptes, CAPACITE_FILE);
-        assert_eq!(refuses, 10);
-
-        // Et ce qui a été accepté est bien là, dans l'ordre.
-        let premier = reception
-            .recv()
-            .await
-            .expect("la file contient des messages");
-        println!("premier message ressorti : {:?}", premier.texte);
-        assert_eq!(premier.texte, "message 0");
+    #[test]
+    fn le_message_de_verification_ne_joue_pas_de_personnage() {
+        println!("---\n{VERIFICATION_REQUISE}\n---");
+        assert!(VERIFICATION_REQUISE.contains("vérification d'âge"));
     }
 }

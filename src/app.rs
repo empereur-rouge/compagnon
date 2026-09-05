@@ -27,18 +27,20 @@ use std::time::Duration;
 
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use crate::config::Config;
+use crate::db::{Base, ErreurBase};
 use crate::horloge;
 use crate::http::{self, EtatApp};
 use crate::scrutation;
 use crate::telegram::envoi::ErreurEnvoi;
 use crate::telegram::{Canal, ErreurCanal};
-use crate::worker::{self, CAPACITE_FILE};
+use crate::worker::Equipe;
 
-/// Délai au-delà duquel le vidage de la file est abandonné à l'extinction.
+/// Délai au-delà duquel on cesse d'attendre les tâches en cours, à l'extinction.
+///
+/// Ne « vide » plus rien, malgré son nom d'origine : ce qui reste en file survit à l'arrêt.
+/// Cette borne empêche seulement un worker bloqué de retenir le processus.
 ///
 /// **Ce nombre est lié à `stop_grace_period` dans `compose.yaml`** : Docker envoie `SIGKILL`
 /// passé son propre sursis, et un vidage plus long que lui serait tranché sans un mot. Les deux
@@ -71,6 +73,13 @@ pub enum ErreurDemarrage {
     /// Le serveur s'est arrêté sur une erreur.
     #[error("le service s'est interrompu : {0}")]
     Service(std::io::Error),
+
+    /// La base est injoignable, ou son schéma n'a pas pu être mis à jour.
+    ///
+    /// Empêche le démarrage, au même titre qu'un jeton refusé : un service qui accepte des
+    /// requêtes pour toutes les mettre en échec est pire qu'un service qui refuse de partir.
+    #[error("base de données indisponible : {0}")]
+    Base(#[from] ErreurBase),
 }
 
 /// Un service assemblé et lié, prêt à servir.
@@ -83,7 +92,7 @@ pub struct Prepare {
     pub adresse: SocketAddr,
     ecoute: TcpListener,
     routeur: Router,
-    worker: JoinHandle<()>,
+    equipe: Equipe,
 }
 
 /// Assemble le service et prend l'adresse d'écoute, sans encore servir.
@@ -103,6 +112,13 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
         "jeton validé par Telegram"
     );
 
+    // La base est jointe et migrée avant que quoi que ce soit ne démarre. Migrer ici plutôt
+    // que par une commande séparée retire une étape d'exploitation qu'on peut oublier — et un
+    // service tournant sur un schéma incomplet est une panne qui ne se déclare qu'au premier
+    // message, donc devant un utilisateur.
+    let base = Base::ouvrir(&config.url_base).await?;
+    tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
+
     // L'écoute est prise AVANT le lancement du worker : tout ce qui peut échouer d'abord,
     // tout ce qui démarre ensuite. Dans l'ordre inverse, un `bind` refusé laissait une tâche
     // détachée derrière lui — elle sortait d'elle-même, mais par la mécanique des `drop`
@@ -118,12 +134,12 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
     // éphémère que seul le système connaît, et c'est celui-là qu'il faut annoncer.
     let adresse = ecoute.local_addr().map_err(echec)?;
 
-    let (expediteur, reception) = mpsc::channel(CAPACITE_FILE);
-    let worker = tokio::spawn(worker::tourner(reception, canal.clone()));
+    let equipe = Equipe::lancer(&base, &canal);
 
     let routeur = http::routeur(EtatApp {
         canal,
-        expediteur,
+        base,
+        workers_vivants: equipe.vivants(),
         demarre_le: horloge::maintenant(),
     });
 
@@ -131,7 +147,7 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
         adresse,
         ecoute,
         routeur,
-        worker,
+        equipe,
     })
 }
 
@@ -149,7 +165,7 @@ impl Prepare {
             adresse,
             ecoute,
             routeur,
-            worker,
+            equipe,
         } = self;
 
         tracing::info!(%adresse, version = crate::VERSION, "service à l'écoute");
@@ -162,20 +178,12 @@ impl Prepare {
             .with_graceful_shutdown(arret)
             .await;
 
-        tracing::info!(delai_max = ?DELAI_VIDAGE, "plus de requête en cours, vidage de la file");
-        match tokio::time::timeout(DELAI_VIDAGE, worker).await {
-            Ok(Ok(())) => tracing::info!("file vidée, arrêt propre"),
-            Ok(Err(erreur)) => tracing::error!(%erreur, "le worker s'est interrompu anormalement"),
-            // Le vidage était auparavant NON borné, alors que chaque `sendMessage` a son
-            // propre délai de 15 s : une file pleine face à un Telegram lent pouvait demander
-            // une heure, très au-delà du sursis que Docker accorde. La garantie « ce qui a été
-            // accusé est traité » était donc déjà tronquée en production, et personne ne le
-            // voyait. Bornée, la troncature devient un échec bruyant et daté.
-            Err(_) => tracing::error!(
-                delai = ?DELAI_VIDAGE,
-                "vidage interrompu : des messages acceptés n'ont pas été traités"
-            ),
-        }
+        // Ce que l'extinction doit garantir a changé avec la file en base : il ne s'agit plus
+        // de la vider — ce qu'elle contient survit à l'arrêt et sera repris au démarrage
+        // suivant — mais seulement de laisser les tâches EN COURS se terminer. Une tâche
+        // interrompue serait reprise au bail, et l'utilisateur recevrait deux fois la même
+        // réponse.
+        equipe.eteindre(DELAI_VIDAGE).await;
 
         resultat.map_err(ErreurDemarrage::Service)
     }
@@ -227,23 +235,17 @@ pub async fn scruter(
     canal.retirer_webhook().await?;
     tracing::info!("webhook retiré : la scrutation et le webhook s'excluent");
 
-    let (expediteur, reception) = mpsc::channel(CAPACITE_FILE);
+    let base = Base::ouvrir(&config.url_base).await?;
+    tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
+
     let canal = Arc::new(canal);
-    let worker = tokio::spawn(worker::tourner(reception, Arc::clone(&canal)));
+    let equipe = Equipe::lancer(&base, &canal);
 
-    scrutation::tourner(&canal, expediteur, arret).await;
+    scrutation::tourner(&canal, &base, arret).await;
 
-    // Même contrat d'extinction que le service webhook : l'expéditeur est relâché à la sortie
-    // de `tourner`, la file se referme, le worker la vide — sous la même borne.
-    tracing::info!(delai_max = ?DELAI_VIDAGE, "vidage de la file");
-    match tokio::time::timeout(DELAI_VIDAGE, worker).await {
-        Ok(Ok(())) => tracing::info!("file vidée, arrêt propre"),
-        Ok(Err(erreur)) => tracing::error!(%erreur, "le worker s'est interrompu anormalement"),
-        Err(_) => tracing::error!(
-            delai = ?DELAI_VIDAGE,
-            "vidage interrompu : des messages acceptés n'ont pas été traités"
-        ),
-    }
+    // Même contrat d'extinction que le service webhook, et désormais le même code : ce qui
+    // reste en file survit à l'arrêt, seules les tâches en cours doivent finir.
+    equipe.eteindre(DELAI_VIDAGE).await;
     Ok(())
 }
 

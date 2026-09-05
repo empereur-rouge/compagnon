@@ -16,6 +16,9 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_en_echo() {
     let faux = FauxTelegram::demarrer().await;
     let service = harnais::demarrer(&faux).await;
     println!("service à l'écoute sur {}", service.adresse);
+    // Condition explicite : sans âge vérifié, le worker répond le message de vérification et
+    // non l'écho. C'est le comportement voulu, et un test dédié l'éprouve.
+    service.base().verifier_age(harnais::UTILISATEUR).await;
 
     let reponse = service
         .poster(&update_privee(900_001, "salut, tu fais quoi ?"))
@@ -154,6 +157,7 @@ async fn un_corps_illisible_est_absorbe_sans_ouvrir_de_boucle_de_rejeu() {
 async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     let faux = FauxTelegram::demarrer().await;
     let service = harnais::demarrer(&faux).await;
+    service.base().verifier_age(harnais::UTILISATEUR).await;
 
     // L'entrant est plafonné à 4096 unités UTF-16 — au-delà, il est écarté avant la file.
     // C'est donc l'**enrobage** de la réponse qui fait franchir la limite : un message
@@ -190,13 +194,21 @@ async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
 }
 
 #[tokio::test]
-async fn l_extinction_ordonnee_traite_tout_ce_qui_avait_ete_accepte() {
+async fn l_extinction_ne_perd_rien_de_ce_qui_a_ete_accepte() {
     let faux = FauxTelegram::demarrer().await;
     let service = harnais::demarrer(&faux).await;
+    service.base().verifier_age(harnais::UTILISATEUR).await;
 
-    // Le point délicat : le service accepte, répond 200, puis on l'éteint immédiatement. Rien
-    // ne doit disparaître — c'est la garantie que la file en mémoire ne perd pas ce qu'elle a
-    // accusé, et le contrat que la file durable de la phase 1 devra tenir à son tour.
+    // Ce que l'extinction garantit a CHANGÉ, et dans le bon sens.
+    //
+    // Avec la file en mémoire, la seule façon de ne rien perdre était de la vider entièrement
+    // avant de rendre la main — ce qui, face à un Telegram lent, pouvait dépasser le sursis de
+    // Docker et perdre le reste en silence.
+    //
+    // Avec la file en base, ce qui n'a pas été traité SURVIT à l'arrêt. L'extinction n'a donc
+    // plus à tout vider : elle doit seulement finir les tâches en cours, pour qu'aucune ne soit
+    // reprise au bail et répondue deux fois. La garantie éprouvée ici est donc :
+    // « accepté + répondu + resté en file == accepté », et non plus « tout est répondu ».
     const COMBIEN: i64 = 12;
     for numero in 0..COMBIEN {
         let reponse = service
@@ -209,34 +221,38 @@ async fn l_extinction_ordonnee_traite_tout_ce_qui_avait_ete_accepte() {
     }
     println!("{COMBIEN} messages acceptés, extinction immédiate demandée");
 
-    service.eteindre().await;
+    // `arreter` et non `eteindre` : la base doit survivre à l'arrêt pour qu'on puisse compter
+    // ce qui y reste — c'est exactement ce que ce test éprouve.
+    let base = service.arreter().await;
 
-    let messages = faux.corps("sendMessage").await;
+    let repondus = faux.corps("sendMessage").await.len() as i64;
+    let restants = base.taches_non_traitees().await;
+
+    println!("répondus avant l'arrêt : {repondus}");
+    println!("restés en file          : {restants}");
     println!(
-        "réponses parties avant l'arrêt complet : {}",
-        messages.len()
+        "total                   : {} (attendu {COMBIEN})",
+        repondus + restants
     );
-    for (rang, message) in messages.iter().enumerate() {
-        let texte = message["text"].as_str().unwrap_or_default();
-        let premiere_ligne = texte.lines().next().unwrap_or_default();
-        println!("  {rang:>2} : {premiere_ligne}");
-    }
     assert_eq!(
-        messages.len(),
-        COMBIEN as usize,
+        repondus + restants,
+        COMBIEN,
         "l'extinction a perdu {} message(s)",
-        COMBIEN as usize - messages.len()
+        COMBIEN - (repondus + restants)
     );
 
-    // Et dans l'ordre où ils sont arrivés.
+    // Et ce qui est parti l'est dans l'ordre : la sérialisation par utilisateur tient malgré
+    // les quatre consommateurs concurrents.
+    let messages = faux.corps("sendMessage").await;
     for (rang, message) in messages.iter().enumerate() {
         let texte = message["text"].as_str().unwrap_or_default();
         assert!(
             texte.contains(&format!("message {rang}")),
-            "le message {rang} n'est pas à sa place"
+            "le message {rang} n'est pas à sa place — l'ordre par conversation a été rompu"
         );
     }
-    println!("ordre respecté sur les {COMBIEN} messages");
+    println!("ordre respecté sur les {} réponses parties", messages.len());
+    base.detruire().await;
 }
 
 #[tokio::test]
@@ -294,12 +310,24 @@ async fn la_sonde_dit_la_version_et_l_etat_de_la_file() {
     let service = harnais::demarrer(&faux).await;
 
     let sante = service.sante().await;
-    println!("GET /health -> {sante}");
-    assert_eq!(sante["statut"], "ok");
-    assert_eq!(sante["version"], env!("CARGO_PKG_VERSION"));
+    println!("GET /health -> {sante:?}");
+
+    assert_eq!(sante.statut, "ok");
+    assert_eq!(sante.version, env!("CARGO_PKG_VERSION"));
+    assert!(sante.base_repond, "la base doit répondre");
     assert_eq!(
-        sante["file_libre"], sante["file_capacite"],
-        "au repos, la file doit être entièrement libre"
+        sante.taches_en_attente,
+        Some(0),
+        "au repos, rien ne doit attendre"
+    );
+    assert_eq!(
+        sante.workers,
+        compagnon::worker::WORKERS,
+        "la sonde doit annoncer les consommateurs qui tournent"
+    );
+    println!(
+        "base_repond={} taches_en_attente={:?} workers={}",
+        sante.base_repond, sante.taches_en_attente, sante.workers
     );
 
     service.eteindre().await;
@@ -354,4 +382,56 @@ async fn un_appel_non_authentifie_est_refuse_avant_que_son_corps_ne_soit_lu() {
 
     service.eteindre().await;
     println!("\nl'authentification précède la lecture du corps, et la limite tient toujours");
+}
+
+#[tokio::test]
+async fn sans_verification_d_age_le_moteur_reste_ferme() {
+    let faux = FauxTelegram::demarrer().await;
+    let service = harnais::demarrer(&faux).await;
+
+    // AUCUN appel à `verifier_age` : c'est tout l'objet de ce test.
+    //
+    // La barrière d'âge est la fonctionnalité vedette de cette phase, et elle n'était présente
+    // dans la suite que comme *condition* — quatre tests l'écartaient en préambule, aucun ne
+    // l'éprouvait. Sa seule couverture vérifiait qu'une constante contient un morceau
+    // d'elle-même : elle serait passée si la barrière avait été retirée.
+    let reponse = service
+        .poster(&update_privee(960_001, "salut, on discute ?"))
+        .await;
+    assert_eq!(
+        reponse.status(),
+        200,
+        "la mise à jour est acquittée malgré le refus"
+    );
+
+    let messages = faux.attendre("sendMessage", 1).await;
+    let texte = messages[0]["text"].as_str().unwrap_or_default();
+    println!("réponse à un utilisateur non vérifié :\n---\n{texte}\n---");
+
+    // Ce qu'il DOIT recevoir : un message qui dit ce qui manque. Un silence serait
+    // indiscernable d'une panne — c'est la première friction que la carte des parcours signale.
+    assert!(
+        texte.contains("vérification d'âge"),
+        "le refus doit nommer ce qui manque, pas se taire"
+    );
+    // Et ce qu'il ne doit PAS recevoir : son propre message en écho.
+    assert!(
+        !texte.contains("salut, on discute ?"),
+        "le moteur ne doit pas avoir tourné"
+    );
+
+    // Puis la barrière se lève, et le même utilisateur obtient l'écho.
+    service.base().verifier_age(harnais::UTILISATEUR).await;
+    service
+        .poster(&update_privee(960_002, "et maintenant ?"))
+        .await;
+    let messages = faux.attendre("sendMessage", 2).await;
+    let texte = messages[1]["text"].as_str().unwrap_or_default();
+    println!("après vérification :\n---\n{texte}\n---");
+    assert!(
+        texte.contains("et maintenant ?"),
+        "une fois l'âge vérifié, le moteur doit répondre"
+    );
+
+    service.eteindre().await;
 }

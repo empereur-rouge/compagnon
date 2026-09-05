@@ -62,6 +62,19 @@ pub enum ErrorCode {
     CorpsTropVolumineux,
 
     // --- 5xxx : ressources / quotas ---
+    /// Telegram a refusé ou n'a pas répondu à un envoi lancé par le worker.
+    ///
+    /// Écrit dans `file_messages.erreur_derniere`, jamais rendu sur HTTP : c'est un code de
+    /// tâche, pas de requête. Il vit dans la même grille pour qu'un exploitant n'ait qu'une
+    /// table de codes à connaître.
+    EnvoiImpossible,
+
+    /// La charge utile d'une tâche n'a pas pu être relue.
+    ///
+    /// Signale une incohérence entre ce qui a été enfilé et ce que le worker sait lire —
+    /// typiquement un déploiement à cheval sur deux versions du format.
+    TacheIllisible,
+
     /// La file de traitement est pleine. **Ce n'est pas une défaillance** : c'est la
     /// contre-pression qui fonctionne, et le `503` demande à Telegram de repasser.
     FileSaturee,
@@ -87,6 +100,8 @@ impl ErrorCode {
         Self::MethodeNonAutorisee,
         Self::CorpsTropVolumineux,
         Self::FileSaturee,
+        Self::EnvoiImpossible,
+        Self::TacheIllisible,
         Self::Interne,
         Self::DelaiDepasse,
     ];
@@ -104,6 +119,8 @@ impl ErrorCode {
             Self::CorpsTropVolumineux => 2006,
             Self::FileSaturee => 5001,
             Self::Interne => 9001,
+            Self::EnvoiImpossible => 9003,
+            Self::TacheIllisible => 9004,
             Self::DelaiDepasse => 9002,
         }
     }
@@ -122,6 +139,9 @@ impl ErrorCode {
             // Vague à dessein : un appelant n'a pas à savoir si le service est saturé, ce qui
             // renseignerait qui cherche à le saturer.
             Self::FileSaturee => "requête refusée, réessayer plus tard",
+            // Ces deux-là ne sortent jamais sur HTTP ; le message existe pour que la grille
+            // reste complète et que `TOUS` puisse être éprouvé uniformément.
+            Self::EnvoiImpossible | Self::TacheIllisible => "erreur interne",
             Self::Interne => "erreur interne",
             Self::DelaiDepasse => "délai de traitement dépassé",
         }
@@ -141,6 +161,7 @@ impl ErrorCode {
             // 503 et non 429 : Telegram rejoue sur 5xx, ce qui est exactement le comportement
             // voulu. Un 429 le ferait abandonner selon sa propre politique.
             Self::FileSaturee => StatusCode::SERVICE_UNAVAILABLE,
+            Self::EnvoiImpossible | Self::TacheIllisible => StatusCode::SERVICE_UNAVAILABLE,
             // 503 et non 500 : la défaillance est presque toujours transitoire. Telegram
             // rejoue la mise à jour sur 5xx, ce qui est exactement le comportement voulu —
             // le message de l'utilisateur ne doit pas disparaître parce que le disque était
@@ -158,7 +179,8 @@ impl ErrorCode {
             // une sonde hostile. Les deux se regardent.
             // Une rafale de ces deux-là est le signal d'un déploiement désaccordé ou d'une
             // saturation durable : les deux se regardent, aucun n'est du bruit de fond.
-            Self::WebhookSecretInvalide | Self::FileSaturee => Level::WARN,
+            Self::WebhookSecretInvalide | Self::FileSaturee | Self::EnvoiImpossible => Level::WARN,
+            Self::TacheIllisible => Level::ERROR,
             // Corps mal formés, routes inconnues : bruit de fond d'Internet.
             Self::PayloadIllisible
             | Self::PayloadInattendu

@@ -357,15 +357,10 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    const SECRET: &str = "un-secret-de-quarante-huit-caracteres-exactement";
+    use crate::fixtures::SECRET;
 
     fn canal_de_test() -> Canal {
-        let config = Config {
-            jeton_bot: "123456789:AAExempleDeJetonQuiNeSertAAbsolumen".to_owned(),
-            secret_webhook: SECRET.to_owned(),
-            adresse_ecoute: "127.0.0.1:0".parse().expect("adresse littérale"),
-            api_telegram: "https://api.telegram.org".to_owned(),
-        };
+        let config = crate::fixtures::config_de_test("https://api.telegram.org");
         Canal::new(&config).expect("le client doit se construire")
     }
 

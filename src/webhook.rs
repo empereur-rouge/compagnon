@@ -54,18 +54,26 @@ pub async fn recevoir(State(etat): State<EtatApp>, corps: Bytes) -> Result<Statu
     let chat_id = recu.chat_id;
     let taille = recu.texte.len();
 
-    etat.expediteur.try_send(recu).map_err(|source| {
-        // La file pleine n'est pas une défaillance : c'est la contre-pression qui fonctionne.
-        // Le `503` demande à Telegram de repasser, ce qu'il fait.
-        ApiError::avec_source(
+    match admission::enfiler(&etat.base, &recu).await {
+        Ok(admission::Admission::Enfile) => {
+            tracing::info!(update_id, chat_id, octets = taille, "message mis en file");
+            Ok(StatusCode::OK)
+        }
+        // La borne atteinte n'est pas une défaillance : c'est la contre-pression qui
+        // fonctionne. Le `503` demande à Telegram de repasser, ce qu'il fait — et le message
+        // n'est donc pas perdu, seulement différé.
+        Ok(admission::Admission::Sature) => Err(ApiError::new(
             ErrorCode::FileSaturee,
-            "file de traitement saturée, mise à jour non acceptée",
+            "borne de file atteinte pour cet utilisateur",
+        )),
+        // Une base indisponible, elle, EST une défaillance. Le `503` obtient le même rejeu,
+        // mais le code et le niveau de journal disent qu'il faut aller voir.
+        Err(source) => Err(ApiError::avec_source(
+            ErrorCode::Interne,
+            "mise en file impossible",
             source,
-        )
-    })?;
-
-    tracing::info!(update_id, chat_id, octets = taille, "message mis en file");
-    Ok(StatusCode::OK)
+        )),
+    }
 }
 
 /// Lit le corps, ou l'absorbe en le journalisant.

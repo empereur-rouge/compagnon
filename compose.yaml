@@ -4,7 +4,7 @@
 #   docker compose up --detach --build
 #   docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
 #
-# Deux conteneurs : le service, et un proxy qui termine TLS. Telegram refuse un webhook qui
+# Trois conteneurs : le service, PostgreSQL, et un proxy qui termine TLS. Telegram refuse un webhook qui
 # n'est pas en HTTPS avec un certificat valide — ce n'est pas un confort, c'est la condition
 # pour recevoir le moindre message.
 
@@ -25,6 +25,39 @@ services:
       - ${FICHIER_ENV:-.env}
     # Aucun port publié : le service n'est joignable que par le proxy, sur le réseau interne
     # du projet. Publier 8080 sur l'hôte offrirait /health à quiconque scanne la machine.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    # Le service applique ses migrations au démarrage : il doit trouver une base qui répond,
+    # pas seulement un conteneur lancé. `service_healthy` attend `pg_isready`, sans quoi le
+    # premier démarrage échoue une fois sur deux selon la vitesse du disque.
+    depends_on:
+      base:
+        condition: service_healthy
+
+  base:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # Ni port publié, ni exposition : la base n'est joignable que par le service, sur le
+    # réseau interne. Publier 5432 sur l'hôte l'offrirait à quiconque scanne la machine —
+    # et c'est là que vivent les conversations.
+    environment:
+      POSTGRES_USER: compagnon
+      POSTGRES_DB: compagnon
+      POSTGRES_PASSWORD: ${MOTDEPASSE_BASE:?renseigner MOTDEPASSE_BASE dans le .env}
+    volumes:
+      # Le volume EST la donnée. Le perdre perd les conversations, pas seulement un cache.
+      - donnees_base:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U compagnon -d compagnon"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     logging:
       driver: json-file
       options:
@@ -65,3 +98,4 @@ services:
 volumes:
   certificats:
   config_proxy:
+  donnees_base:
