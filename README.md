@@ -105,6 +105,7 @@ secondes, ferait rejouer Telegram à chaque message.
 | | |
 |---|---|
 | [Carte du projet](documentation/MOC.md) | par où commencer |
+| [Un seul bot](documentation/un-seul-bot.md) | la décision la plus structurante du produit |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |
 | [CHANGELOG.md](CHANGELOG.md) | ce qui a changé, version par version |

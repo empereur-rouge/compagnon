@@ -5,6 +5,15 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.2.1] - 2026-09-05
+
+### Infrastructure
+
+- **docs** : consigne la décision « un seul bot pour toute la plateforme », avec ce que
+  Telegram permet et interdit — aucune API de création de bot, plafond de 20 bots par compte,
+  aucune API pour l'avatar d'un bot. La question « comment créer un bot par client » n'a pas de
+  bonne réponse mais une bonne dissolution, et cette page existe pour qu'on ne la repose pas.
+
 ## [0.2.0] - 2026-09-05
 
 Recevoir sans rien déployer.
@@ -156,5 +165,6 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |
 | 0.2.0 | 2026-09-05 | 0 — réception par scrutation |
 | 0.1.0 | 2026-09-05 | 0 — la boucle de transport Telegram |
