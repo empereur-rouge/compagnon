@@ -2,7 +2,7 @@
 tags: [moc]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.2.0
+version: v0.2.2
 ---
 
 # Carte du projet — compagnon
@@ -14,11 +14,13 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 1. [[transport-telegram]] — comment un message entre et comment une réponse sort. Tout le
    reste se branche dessus.
-2. [[un-seul-bot]] — la décision la plus structurante du produit : un bot partagé, et non un
-   bot par client. À lire avant de concevoir quoi que ce soit de la phase 1.
-3. [[contrat-d-erreur]] — les codes numériques stables, et pourquoi les messages publics sont
+2. [[un-assistant-par-personne]] — le modèle produit. Chacun crée **son** assistant et n'en a
+   qu'un ; il n'y a pas de catalogue partagé. Décide du schéma, du coût et de la modération.
+3. [[un-seul-bot]] — un seul bot Telegram pour toute la plateforme, et ce que Telegram
+   interdit. À lire avec la précédente.
+4. [[contrat-d-erreur]] — les codes numériques stables, et pourquoi les messages publics sont
    vagues sur certaines tranches.
-4. `README.md` à la racine — démarrer, vérifier, exploiter.
+5. `README.md` à la racine — démarrer, vérifier, exploiter.
 
 ## Fiches
 
@@ -27,6 +29,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 | [[transport-telegram]] | 0 | webhook **et scrutation**, authentification, file, envoi, découpage |
 | [[contrat-d-erreur]] | 0 | codes numériques, messages publics, journalisation |
 | [[un-seul-bot]] | 0 | pourquoi un seul bot Telegram, et ce que Telegram interdit |
+| [[un-assistant-par-personne]] | 0 | le modèle produit : un assistant possédé, pas un catalogue |
 
 ## Ce qui viendra
 
@@ -35,7 +38,7 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 
 | Fiche à venir | Phase | Sujet |
 |---|---|---|
-| `personnages` | 1 | fiche de personnage, création, modération à la création |
+| `assistants` | 1 | fiche possédée par l'utilisateur, création, modération |
 | `moteur-de-dialogue` | 1 | appel du modèle, mise en cache du préfixe, refus |
 | `memoire` | 2 | journal roulant, souvenirs structurés, état de relation |
 | `medias` | 3 | file de génération à bail, cache de `file_id` |
@@ -47,7 +50,9 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 - **Le jeton Telegram est dans l'URL** — donc aucune URL n'atteint un journal, une erreur ou un
   `Debug`. Vaut aussi pour le proxy : voir la section correspondante de [[transport-telegram]].
 - **Tête-à-tête uniquement** — les messages de groupe sont écartés à l'extraction.
-- **Un seul bot pour tous** — l'utilisateur ne possède rien, il vient parler. Voir
+- **Un assistant par personne, qui lui appartient** — pas de catalogue partagé. Voir
+  [[un-assistant-par-personne]].
+- **Un seul bot Telegram pour tous** — l'utilisateur possède son assistant, pas un bot. Voir
   [[un-seul-bot]] : Telegram n'offre d'ailleurs aucune API de création de bot.
 - **Deux portes, un seul chemin** — webhook en production, scrutation sur un poste de travail ;
   tout ce qui suit l'admission est rigoureusement identique, et testé comme tel.

@@ -5,6 +5,22 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.2.2] - 2026-09-05
+
+### Infrastructure
+
+- **docs** : consigne le modèle produit — **un assistant par personne, qui lui appartient**, et
+  non un catalogue de personnages partagés. C'est le modèle Replika et non celui de
+  character.ai, et la différence décide du schéma, du coût, de la modération et de l'onboarding.
+  Quatre conséquences documentées : le cache d'invite n'est plus mutualisé entre utilisateurs ;
+  la modération porte sur toute la base et non sur quelques créateurs ; `/start` devient le
+  parcours de création, donc le moment le plus fragile du produit ; l'ancre d'identité doit être
+  générée par assistant, ce qui exclut une LoRA par personne.
+- **docs** : corrige `un-seul-bot.md`, écrit sur l'hypothèse d'un catalogue partagé. Les liens
+  profonds ne désignent plus un personnage — le paramètre `?start=` reste libre pour du
+  parrainage — et le décalage d'avatar est plus sensible qu'annoncé, l'assistant étant censé
+  être celui de l'utilisateur.
+
 ## [0.2.1] - 2026-09-05
 
 ### Infrastructure
@@ -165,6 +181,7 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
 | 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |
 | 0.2.0 | 2026-09-05 | 0 — réception par scrutation |
 | 0.1.0 | 2026-09-05 | 0 — la boucle de transport Telegram |

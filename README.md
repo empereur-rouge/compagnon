@@ -1,8 +1,9 @@
 # compagnon
 
-Plateforme de personnages conversationnels sur Telegram. Un bot unique, derrière lequel vivent
-plusieurs personnages écrits par les utilisateurs ; le service tient la mémoire de chaque
-relation et rend au personnage une voix, un visage et une continuité.
+Assistant conversationnel personnel sur Telegram. Chaque utilisateur crée **le sien** — il le
+nomme, définit sa personnalité, choisit son apparence et sa voix — et le service tient la
+mémoire de cette relation, lui rendant une voix, un visage et une continuité. Un seul bot
+Telegram sert tout le monde ; l'assistant, lui, appartient à chacun.
 
 **État : phase 0.** La boucle de transport, et rien d'autre. Telegram appelle le webhook, le
 service authentifie, extrait, met en file, répond en écho. Pas de base, pas de modèle, pas de
@@ -68,7 +69,7 @@ compagnon webhook retirer          retire le webhook
 | ✅ | les deux secrets bannis des journaux, du proxy, et **du type des erreurs** |
 | ✅ | authentification du webhook **avant** que le corps ne soit lu |
 | ✅ | réception par scrutation, pour éprouver le bot depuis un poste de travail |
-| ⬜ | base, personnages, moteur de dialogue — phase 1 |
+| ⬜ | base, création d'assistant, modération, moteur de dialogue — phase 1 |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |
 
@@ -105,7 +106,8 @@ secondes, ferait rejouer Telegram à chaque message.
 | | |
 |---|---|
 | [Carte du projet](documentation/MOC.md) | par où commencer |
-| [Un seul bot](documentation/un-seul-bot.md) | la décision la plus structurante du produit |
+| [Un assistant par personne](documentation/un-assistant-par-personne.md) | le modèle produit, et ce qu'il décide |
+| [Un seul bot](documentation/un-seul-bot.md) | pourquoi un seul bot Telegram |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |
 | [CHANGELOG.md](CHANGELOG.md) | ce qui a changé, version par version |

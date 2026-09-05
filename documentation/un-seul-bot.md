@@ -2,7 +2,7 @@
 tags: [reference]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.2.0
+version: v0.2.2
 ---
 
 # Un seul bot pour toute la plateforme
@@ -14,9 +14,9 @@ besoin d'en créer un : on ouvre une conversation avec le bot de la plateforme e
 Un `chat_id` identifie une personne, une table `conversation` la relie au personnage qu'elle a
 choisi.
 
-C'est le modèle de character.ai, et il est retenu ici parce que **l'utilisateur ne possède
-rien** : il vient parler. Lui demander de créer un bot reviendrait à demander à un visiteur
-d'héberger son propre serveur.
+L'utilisateur possède bien quelque chose — son assistant, voir [[un-assistant-par-personne]] —
+mais pas un bot Telegram. Lui demander d'en créer un reviendrait à demander à un visiteur
+d'héberger son propre serveur pour visiter un site.
 
 ## Pourquoi cette page existe
 
@@ -60,28 +60,33 @@ C'est une fondation qui casse au moment précis où le produit marche.
 
 ## Ce que cela coûte, et comment on l'atténue
 
-Un seul bot signifie **un seul `@handle` et un seul avatar**. Sophie et Léa apparaissent sous
-la même photo dans la liste des discussions de l'utilisateur. C'est le seul vrai prix, et il
-est réel : l'identité visuelle d'un personnage est une partie de ce qui le rend présent.
+Un seul bot signifie **un seul `@handle` et un seul avatar**. L'assistant de chacun est censé
+être le sien, et l'icône dans sa liste de discussions est pourtant celle de la plateforme.
+C'est le seul vrai prix, et il est réel : le visage d'un assistant fait partie de ce qui le rend
+présent.
 
 Atténuations, par ordre d'efficacité :
 
-1. **Liens profonds.** `t.me/<bot>?start=sophie` ouvre la conversation directement sur un
-   personnage. Telegram transmet le paramètre dans le `/start`, ce qui donne à chaque
-   personnage sa propre porte d'entrée sans lui donner son propre bot.
-2. **Le portrait en ouverture.** Envoyer la photo du personnage au premier message installe son
-   visage dans la conversation, là où l'utilisateur regarde.
-3. **Le nom dans le fil.** Le personnage se nomme dans ses messages ; l'icône du bot devient un
+1. **Le portrait à la fin de la création.** Envoyer l'image d'ancre au moment où l'utilisateur
+   vient de composer son assistant installe ce visage dans la conversation — là où il regarde,
+   et au moment où il y est le plus attentif.
+2. **Le nom dans le fil.** L'assistant se nomme dans ses messages ; l'icône du bot redevient un
    détail de la liste, pas de la conversation.
+3. **Un avatar de plateforme neutre**, qui ne prétend être le visage de personne — plutôt qu'un
+   portrait qui contredirait celui de chaque assistant.
+
+Les liens profonds (`?start=…`) ne servent plus à désigner un personnage, puisqu'il n'y a pas de
+catalogue. Le paramètre reste libre pour du parrainage.
 
 ## Ce que la phase 1 en tire
 
 - **Pas de table `bot`, pas de jeton par client.** Un jeton dans l'environnement, point.
 - `utilisateur` est clé sur `chat_id` — l'identifiant Telegram, stable et déjà là.
-- `conversation` relie un `utilisateur` à un `personnage` ; c'est elle qui porte la mémoire.
-- `/start <parametre>` doit être traité à part dès la phase 1 : c'est à la fois le premier
-  contact et le mécanisme de lien profond. En phase 0 il est renvoyé en écho, ce que la carte
-  des parcours signale comme la friction n° 2 du produit.
+- `assistant` pend de l'utilisateur, et la mémoire pend de l'assistant : voir
+  [[un-assistant-par-personne]].
+- `/start` doit être traité à part dès la phase 1 : c'est le parcours de création, donc le
+  moment le plus fragile du produit. En phase 0 il est renvoyé en écho, ce que la carte des
+  parcours signale comme la friction n° 2.
 
 ## Interactions
 
