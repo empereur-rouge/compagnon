@@ -9,12 +9,16 @@
 //! compagnon                          sert le webhook et fait tourner le worker
 //! compagnon ecouter                  reçoit par scrutation, sans domaine ni TLS
 //! compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
+//! compagnon catalogues               ce parmi quoi un compagnon peut être composé
+//! compagnon compagnon creer …        crée un compagnon à partir de choix
+//! compagnon compagnon montrer <id>   affiche le prompt composé
+//! compagnon utilisateur age <id>     enregistre une vérification d'âge
 //! compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
 //! compagnon webhook retirer          retire le webhook
 //! ```
 
 use compagnon::config::Config;
-use compagnon::{VERSION, app, cli, telemetry};
+use compagnon::{VERSION, app, cli, cli_compagnon, telemetry};
 
 /// Code de sortie quand le service refuse de démarrer, ou qu'une commande échoue.
 const SORTIE_ERREUR: i32 = 1;
@@ -69,6 +73,24 @@ async fn main() {
             telemetry::init_vers_stderr();
             rendre_compte(cli::declarer_webhook(&config_ou_sortir(), url).await);
         }
+        ["catalogues"] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(cli_compagnon::montrer_catalogues(&config_ou_sortir()).await);
+        }
+        ["compagnon", "creer", reste @ ..] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(cli_compagnon::creer(&config_ou_sortir(), reste).await);
+        }
+        ["compagnon", "montrer", utilisateur] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(cli_compagnon::montrer(&config_ou_sortir(), utilisateur).await);
+        }
+        ["utilisateur", "age", utilisateur] => {
+            telemetry::init_vers_stderr();
+            rendre_compte_compagnon(
+                cli_compagnon::verifier_age(&config_ou_sortir(), utilisateur).await,
+            );
+        }
         ["webhook", "retirer"] => {
             telemetry::init_vers_stderr();
             rendre_compte(cli::retirer_webhook(&config_ou_sortir()).await);
@@ -93,6 +115,18 @@ fn config_ou_sortir() -> Config {
             tracing::error!(%erreur, "configuration refusée");
             std::process::exit(SORTIE_ERREUR);
         }
+    }
+}
+
+/// Sort en erreur si une commande de compagnon a échoué.
+///
+/// Distincte de [`rendre_compte`] parce que les erreurs d'usage ne sont pas des pannes : elles
+/// méritent le message tel quel, sans le décorum d'un journal d'incident, devant quelqu'un qui
+/// vient de se tromper d'argument.
+fn rendre_compte_compagnon(resultat: Result<(), cli_compagnon::ErreurCompagnon>) {
+    if let Err(erreur) = resultat {
+        eprintln!("{erreur}");
+        std::process::exit(SORTIE_ERREUR);
     }
 }
 

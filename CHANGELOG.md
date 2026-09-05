@@ -5,6 +5,163 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.8.0] - 2026-09-05
+
+Phase 1.2e — la création, et le geste d'exploitation qui manquait.
+
+### Added
+
+- **feat(cli)** : `compagnon catalogues`, `compagnon compagnon creer`,
+  `compagnon compagnon montrer`, `compagnon utilisateur age`. Les arguments sont des paires
+  `clé=valeur` : sept choix en positionnel se seraient inversés sans qu'on le voie jusqu'à la
+  lecture du prompt. Le dépôt ne gagne pas d'analyseur d'arguments pour autant.
+- **feat(cli)** : `compagnon utilisateur age` existe parce que la phase 1.1 exigeait une
+  vérification d'âge **sans donner aucun moyen de la poser** — la seule façon était une écriture
+  SQL directe, ce qu'il a fallu faire à la main lors de l'essai de bout en bout. Le parcours
+  d'inscription la remplacera pour l'utilisateur ; celle-ci reste pour le support.
+
+### Changed
+
+- **change(personnage)** : le type `Cible` — quelle composition, archétypes ou tons — devient
+  public et sert aux deux modules. Les trois noms de table voyagent toujours ensemble ; passés
+  séparément ils faisaient huit arguments, et rien n'empêchait de mélanger la table de liaison
+  des archétypes avec la référence des tons.
+
+### Notes
+
+- La création ne pose que des **choix**, puis appelle la validation. Il n'existe aucun chemin,
+  dans la CLI ni ailleurs, par lequel un texte saisi atteindrait le modèle.
+- Éprouvé sur le vrai chemin : un compagnon créé sur la base de production de développement,
+  avec la fusion Yandere résolue depuis le catalogue, et un nom refusé qui n'a laissé aucun
+  prompt derrière lui.
+
+## [0.7.0] - 2026-09-05
+
+Phase 1.2d — la modération, et ce qu'elle protège réellement.
+
+### Added
+
+- **feat(moderation)** : examen du **nom**, seul texte libre d'un compagnon. Tout le reste vient
+  de catalogues clos : une apparence ne peut pas évoquer un mineur parce que la base refuse
+  toute tranche sous 25 ans, une personnalité ne peut pas dériver parce que les descriptions
+  sont écrites au catalogue. Le nom est l'unique interstice, et c'est le seul endroit à examiner.
+- **feat(moderation)** : `ref_termes_interdits`, une **table** et non une constante — un
+  signalement arrive un dimanche soir, et attendre une recompilation pour y répondre serait
+  absurde. L'inverse vaut aussi : un terme trop large se retire sans déploiement, ce qu'un test
+  éprouve.
+- **feat(personnage)** : `valider` compose, examine et inscrit **d'un seul tenant**. Séparer ces
+  gestes laisserait exister un instant où un prompt est écrit sans que la modération se soit
+  prononcée — précisément l'état que le verrou d'activation existe pour empêcher.
+- **feat(personnage)** : l'historique versionné, avec un instantané complet construit par la
+  base en une requête. Un refus y est inscrit comme une validation : il fait partie de ce qu'on
+  doit pouvoir raconter.
+
+### Notes
+
+- **Ce qui est structurel et ce qui ne l'est pas.** Les chiffres sont refusés dans un nom sans
+  exception, ce qui élimine d'un coup toute la classe « lea12ans » sans avoir à en énumérer les
+  graphies. Le rapprochement de termes, lui, est heuristique et le reste : il rate les graphies
+  détournées, les diminutifs, les langues absentes de la liste. **Ce module est la première
+  ligne, pas le classifieur du produit** — celui-ci arrive avec le client de modèle en 1.3.
+- **Les termes courts ne sont cherchés que comme mots entiers.** « mere » en sous-chaîne
+  refuserait « Meredith », « ado » refuserait « Adolphe ». Un faux refus n'est pas gratuit : il
+  fait échouer quelqu'un qui n'a rien fait, sur son premier geste dans le produit. Seize noms
+  ordinaires sont éprouvés comme passant, dont ceux-là.
+- **Le message rendu ne nomme jamais le terme reconnu** — le dire apprendrait quoi contourner.
+  Il part au journal d'exploitation.
+
+## [0.6.0] - 2026-09-05
+
+Phase 1.2c — la composition du prompt.
+
+### Added
+
+- **feat(personnage)** : `composer` produit le prompt système à partir des traits, dans l'ordre
+  du document — identité, personnalité, curseurs plafonnés, registre, puis **règles fixes en
+  dernier**. L'ordre n'est pas cosmétique : un modèle accorde plus de poids à ce qui vient en
+  dernier, et aucune valeur de paramètre ne doit pouvoir contredire ces règles.
+- **feat(personnage)** : `regles`, les quatre règles que rien n'assouplit. Les deux premières
+  sont des interdits, les deux suivantes décrivent une conduite — et la distinction entre elles
+  est celle du **temps** : « ravi de parler à son humain » porte sur l'instant présent, « pas de
+  reproche sur une absence » sur le passé. « Je suis content que tu sois là » respecte les deux ;
+  « j'ai cru que tu m'avais oublié » viole la seconde en ayant l'air d'une variante de la
+  première.
+- **feat(personnage)** : résolution des fusions telle que le document la définit — la fusion
+  **remplace** l'addition des deux descriptions, consomme le principal et le premier secondaire,
+  et le second s'ajoute par-dessus.
+- **feat(personnage)** : les plafonds de juridiction sont appliqués **dans la requête**, pas
+  après coup — une vérification qu'une évolution du code applicatif ne peut pas contourner.
+- **feat(personnage)** : empreinte SHA-256 du prompt, pour détecter un écart introduit hors du
+  processus.
+
+### Notes
+
+- **Les curseurs deviennent des paliers, pas des nombres.** « Humour : 0,63 » demande au modèle
+  d'interpréter une échelle qu'il ne connaît pas, et deux valeurs voisines produiraient des
+  réponses arbitrairement différentes. Cinq paliers nommés rendent la composition stable : un
+  curseur qui glisse de 0,61 à 0,64 ne change pas le prompt, donc ne redemande pas de modération.
+- **`composer` est une fonction pure**, séparée de la lecture en base. C'est ce qui permet de
+  **lire le prompt produit** dans la sortie des tests — c'est le texte qui compte, pas le fait
+  que la fonction rende `Ok`. Deux défauts n'ont été trouvés que par cette lecture : une espace
+  parasite avant une virgule, et le code interne `mi_longs` livré tel quel au modèle.
+
+## [0.5.0] - 2026-09-05
+
+Phase 1.2b — les tables du compagnon, et ce que la base refuse d'en faire.
+
+### Added
+
+- **feat(db)** : `personnage_apparence`, `personnage_archetypes`, `personnage_tons`,
+  `personnage_parametres_gradues`, `personnage_parametres_interaction`,
+  `personnage_parametres_modele`, `personnage_historique_versions`.
+- **feat(db)** : **le verrou d'activation**. La spécification disait « `valide_le` nul ⇒ le
+  compagnon ne peut pas passer en `actif`, vérifiable en base par une requête d'audit ».
+  Vérifiable n'est pas tenu : un déclencheur refuse désormais l'activation, quel que soit le
+  chemin d'écriture. C'est la dernière garantie avant qu'un compagnon ne se mette à parler, et
+  elle porte tout ce que la modération aura décidé.
+- **feat(db)** : un principal obligatoire et au plus deux secondaires, par index uniques
+  partiels ; plus une contrainte croisée `rôle`/`rang` — un principal rangé ou un secondaire
+  sans rang décriraient un état que la résolution du prompt ne saurait pas lire.
+
+### Fixed
+
+- **fix(db)** : **le triangle utilisateur / compagnon / conversation était ouvert.** Trois index
+  uniques garantissaient trois bornes indépendantes, mais les deux clés étrangères de
+  `conversations` étaient disjointes : une écriture directe pouvait relier l'utilisateur A au
+  compagnon de B. Sur un produit intime, c'est le chemin par lequel la mémoire de quelqu'un
+  atterrit chez un autre. Une clé étrangère composite rend la construction impossible au lieu de
+  la garder en trois endroits.
+
+## [0.4.0] - 2026-09-05
+
+Phase 1.2 — les catalogues. Première des cinq tranches du schéma compagnon.
+
+### Added
+
+- **feat(db)** : les vocabulaires contrôlés dans lesquels l'utilisateur choisit — genres,
+  morphologies, couleurs de cheveux et d'yeux, styles vestimentaires, tranches d'âge apparentes,
+  vingt archétypes, treize tons, leurs fusions nommées orientées, et six curseurs gradués avec
+  leurs plafonds par juridiction.
+- **feat(db)** : `db::catalogues`, la lecture de ces tables. Les cinq catalogues d'apparence
+  partagent une seule fonction, le nom de table venant d'un énuméré fermé — sûr précisément
+  parce qu'aucune chaîne extérieure ne peut l'atteindre.
+- **feat(db)** : `rust_decimal` pour les curseurs. Les décoder en `f64` réintroduirait dans le
+  code l'imprécision que `numeric(3,2)` refuse en base.
+
+### Notes
+
+- **Le peuplement vit dans la migration**, pas dans un script à part : ces valeurs ne sont pas
+  des données d'exemple mais des constantes du produit. Une base migrée sans elles laisserait le
+  service incapable de créer un compagnon — panne qui ne se déclarerait qu'au premier
+  utilisateur.
+- **`age_min >= 25` est une contrainte de base, pas une convention.** Le plancher est à 25 et
+  non à 18 : une apparence proche de la limite est exactement la zone qu'aucun classifieur ne
+  tranche de façon fiable, et que ce produit n'a aucune raison d'explorer. Éprouvé par des
+  insertions à 16, 18 et 24 ans, toutes refusées.
+- **La sûreté est structurelle** : si aucune valeur du catalogue n'évoque un mineur, aucune
+  composition ne le peut. La modération porte sur l'ensemble des valeurs possibles, une fois,
+  et non sur chaque compagnon créé.
+
 ## [0.3.0] - 2026-09-05
 
 Phase 1.1 — la persistance. Livrée en deux temps : la couche base, puis la bascule.
@@ -291,6 +448,11 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |
+| 0.7.0 | 2026-09-05 | 1.2d — modération |
+| 0.6.0 | 2026-09-05 | 1.2c — composition du prompt |
+| 0.5.0 | 2026-09-05 | 1.2b — tables du compagnon |
+| 0.4.0 | 2026-09-05 | 1.2a — catalogues |
 | 0.3.0 | 2026-09-05 | 1.1 — persistance |
 | 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
 | 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |

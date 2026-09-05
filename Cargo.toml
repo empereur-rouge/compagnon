@@ -1,6 +1,6 @@
 [package]
 name = "compagnon"
-version = "0.3.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Plateforme de personnages conversationnels sur Telegram"
@@ -16,6 +16,11 @@ dotenvy = "0.15.7"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# sha2 : empreinte du prompt système généré, pour détecter un écart introduit hors du processus
+# — une console psql, une restauration partielle. DÉJÀ dans l'arbre via sqlx-core (authentification
+# SCRAM) : le déclarer en dépendance directe n'ajoute rien au binaire, c'est la même caisse à la
+# même version.
+sha2 = "0.10.9"
 # PostgreSQL. Trois choix explicites dans cette liste de features :
 #
 # « tls-rustls-aws-lc-rs » et non natif : la base peut être ailleurs que sur la machine du
@@ -32,9 +37,13 @@ serde_json = "1.0.151"
 # vérification sur des tests qui tournent contre un vrai PostgreSQL.
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "migrate", "macros", "uuid", "chrono",
+    # Les curseurs sont des `numeric(3,2)`, choisis pour que 0,37 soit exactement 0,37 — les
+    # décoder en `f64` réintroduirait, dans le code, l'imprécision que le schéma refuse.
+    "rust_decimal",
 ] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 chrono = { version = "0.4.42", default-features = false, features = ["std", "serde"] }
+rust_decimal = { version = "1.38", default-features = false, features = ["std"] }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tower-http = { version = "0.7.0", features = ["trace", "timeout", "limit", "catch-panic"] }

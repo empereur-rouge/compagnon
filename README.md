@@ -39,7 +39,7 @@ docker compose exec bot compagnon sonde
 
 ```bash
 ./scripts/base-de-test.sh             # les tests exigent un vrai PostgreSQL
-cargo test --release -- --nocapture   # 26 unitaires + 21 de bout en bout + 1 doctest
+cargo test --release -- --nocapture   # 41 unitaires + 35 de bout en bout + 1 doctest
 cargo clippy --all-targets            # zéro avertissement attendu
 cargo doc --no-deps --open            # zéro avertissement attendu
 ```
@@ -74,7 +74,9 @@ compagnon webhook retirer          retire le webhook
 | ✅ | file **en base à bail** : rien n'est perdu à un arrêt brutal |
 | ✅ | quatre consommateurs concurrents, ordre tenu **dans** chaque conversation |
 | ✅ | vérification d'âge exigée avant tout accès au moteur |
-| ⬜ | création d'assistant, modération, moteur de dialogue — phase 1.2+ |
+| ✅ | le prompt système est **composé**, jamais saisi — la sûreté est structurelle |
+| ✅ | un compagnon ne peut pas s'activer sans être passé par la modération |
+| ⬜ | moteur de dialogue, parcours de création dans Telegram — phase 1.3+ |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |
 
@@ -113,6 +115,7 @@ secondes, ferait rejouer Telegram à chaque message.
 | [Carte du projet](documentation/MOC.md) | par où commencer |
 | [Un assistant par personne](documentation/un-assistant-par-personne.md) | le modèle produit, et ce qu'il décide |
 | [Persistance](documentation/persistance.md) | base, file à bail, concurrence |
+| [Le compagnon](documentation/compagnon.md) | catalogues, prompt composé, modération |
 | [Un seul bot](documentation/un-seul-bot.md) | pourquoi un seul bot Telegram |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |
