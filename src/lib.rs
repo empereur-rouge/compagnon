@@ -2,9 +2,11 @@
 //!
 //! # Ce que le service est
 //!
-//! Un bot Telegram unique derrière lequel vivent plusieurs personnages, écrits par les
-//! utilisateurs. Chaque conversation lie une personne à un personnage ; le service tient la
-//! mémoire de cette relation et rend au personnage une voix, un visage et une continuité.
+//! Un bot Telegram unique, derrière lequel chaque utilisateur possède **son** assistant : il
+//! l'a nommé, en a défini la personnalité, choisi l'apparence et la voix. Le service tient la
+//! mémoire de cette relation et rend à l'assistant une voix, un visage et une continuité.
+//!
+//! Pas de catalogue partagé — voir `documentation/un-assistant-par-personne.md`.
 //!
 //! # Phase 0 — ce qui existe aujourd'hui
 //!
@@ -17,7 +19,7 @@
 //! Les phases suivantes remplacent l'écho, pas le transport :
 //!
 //! ```text
-//! phase 1   base + moteur de dialogue + fiche de personnage
+//! phase 1   base + modération + création d'assistant + moteur de dialogue
 //! phase 2   mémoire (journal roulant, souvenirs structurés, état de relation)
 //! phase 3   photos — file de génération à bail, cache de `file_id`
 //! phase 4   audio — synthèse vocale sortante, transcription entrante
