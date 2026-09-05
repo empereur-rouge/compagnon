@@ -14,9 +14,11 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 1. [[transport-telegram]] — comment un message entre et comment une réponse sort. Tout le
    reste se branche dessus.
-2. [[contrat-d-erreur]] — les codes numériques stables, et pourquoi les messages publics sont
+2. [[un-seul-bot]] — la décision la plus structurante du produit : un bot partagé, et non un
+   bot par client. À lire avant de concevoir quoi que ce soit de la phase 1.
+3. [[contrat-d-erreur]] — les codes numériques stables, et pourquoi les messages publics sont
    vagues sur certaines tranches.
-3. `README.md` à la racine — démarrer, vérifier, exploiter.
+4. `README.md` à la racine — démarrer, vérifier, exploiter.
 
 ## Fiches
 
@@ -24,6 +26,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 |---|---|---|
 | [[transport-telegram]] | 0 | webhook **et scrutation**, authentification, file, envoi, découpage |
 | [[contrat-d-erreur]] | 0 | codes numériques, messages publics, journalisation |
+| [[un-seul-bot]] | 0 | pourquoi un seul bot Telegram, et ce que Telegram interdit |
 
 ## Ce qui viendra
 
@@ -44,6 +47,8 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 - **Le jeton Telegram est dans l'URL** — donc aucune URL n'atteint un journal, une erreur ou un
   `Debug`. Vaut aussi pour le proxy : voir la section correspondante de [[transport-telegram]].
 - **Tête-à-tête uniquement** — les messages de groupe sont écartés à l'extraction.
+- **Un seul bot pour tous** — l'utilisateur ne possède rien, il vient parler. Voir
+  [[un-seul-bot]] : Telegram n'offre d'ailleurs aucune API de création de bot.
 - **Deux portes, un seul chemin** — webhook en production, scrutation sur un poste de travail ;
   tout ce qui suit l'admission est rigoureusement identique, et testé comme tel.
 - **Le webhook n'appelle jamais Telegram** — il authentifie, enfile, acquitte. La production
