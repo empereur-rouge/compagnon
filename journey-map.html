@@ -1,0 +1,1524 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>compagnon — Journey Maps</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f5f5f4;
+    --panel: #fafaf9;
+    --panel-2: #fafaf9;
+    --panel-3: #f5f5f4;
+    --border: #e7e5e4;
+    --border-strong: #d6d3d1;
+    --divider: #a8a29e;
+    --text: #1c1917;
+    --muted: #78716c;
+    --muted-2: #a8a29e;
+    --accent: #fcd34d;
+    --accent-soft: #fef3c7;
+    --green: #15803d;
+    --red: #b91c1c;
+    --focus: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  textarea, input, button { font-family: inherit; color: inherit; }
+
+  .app {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 16px;
+    padding: 20px;
+    min-height: 100vh;
+    max-width: 1900px;
+    margin: 0 auto;
+  }
+
+  /* Left rail */
+  .rail {
+    position: sticky;
+    top: 20px;
+    align-self: start;
+    max-height: calc(100vh - 40px);
+    overflow: auto;
+    background: var(--bg);
+    border: none;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    padding: 14px;
+  }
+  .rail h1 {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 0 0 4px 0;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .rail .tagline {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 14px 0;
+  }
+  .toolbar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .tool-btn {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    flex: 1;
+    min-width: 0;
+    transition: border-color 150ms ease, background 150ms ease;
+  }
+  .tool-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--panel); }
+  .save-status {
+    font-size: 11px;
+    color: var(--muted-2);
+    margin-bottom: 14px;
+    min-height: 14px;
+  }
+  .save-status.flash { color: var(--green); }
+
+  .category-header {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    padding: 12px 2px 4px 2px;
+  }
+  .category-header:first-of-type { padding-top: 0; }
+  .journey-item {
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 0;
+    padding: 8px 10px;
+    text-align: left;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+    width: 100%;
+    margin-bottom: 2px;
+    transition: border-color 150ms ease, background 150ms ease;
+  }
+  .journey-item:hover { background: var(--border); }
+  .journey-item.active {
+    border-left-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .journey-item .j-title { font-weight: 600; }
+  .journey-item .j-actor {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  /* Main work area */
+  .main {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    min-width: 0;
+  }
+  .journey-header {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+  }
+  .journey-header h2 {
+    margin: 0 0 4px 0;
+    font-size: clamp(26px, 3vw, 36px);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+  .journey-header .actor-line {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 18px;
+  }
+  .actor-chip {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--text);
+    background: var(--accent-soft);
+    border: 1px solid var(--accent);
+    padding: 1px 7px;
+    border-radius: 4px;
+    margin-left: 4px;
+  }
+  .header-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .field-block label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .field-block textarea {
+    width: 100%;
+    min-height: 50px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    transition: border-color 150ms ease;
+  }
+  .field-block textarea:focus { outline: none; border-color: var(--focus); }
+  .field-block textarea::placeholder { color: var(--muted-2); }
+
+  /* Grid */
+  .grid-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  .grid {
+    display: grid;
+    --label-col: 130px;
+    --moment-col: 260px;
+    grid-template-columns: var(--label-col) repeat(var(--moments, 1), var(--moment-col));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    width: max-content;
+    min-width: 100%;
+  }
+  .cell {
+    background: var(--panel);
+    padding: 10px 11px;
+    min-width: 0;
+  }
+  .cell.label {
+    background: var(--panel-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+  }
+  .cell.label .accent-dot {
+    display: none;
+  }
+  .cell.stage {
+    background: var(--panel-3);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 8px 11px;
+    text-align: center;
+    border-left: 1px solid var(--border);
+  }
+  .cell.moment-header {
+    background: var(--panel-3);
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    padding: 10px 11px;
+  }
+  .cell.moment-header .moment-num {
+    display: inline-block;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--text);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-align: center;
+    line-height: 18px;
+    margin-right: 6px;
+  }
+
+  .cell.readonly {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .cell.readonly .empty { color: var(--muted-2); font-style: italic; font-size: 12px; }
+
+  /* Per-row semantic colours */
+  .cell[data-row="row-pain"] { color: var(--red); }
+  .cell[data-row="row-pain"] textarea { color: var(--red); }
+  .cell[data-row="row-oppty"] { color: var(--green); }
+  .cell[data-row="row-oppty"] textarea { color: var(--green); }
+  /* Service blueprint rows: subtly greyer */
+  .cell[data-row="row-front"],
+  .cell[data-row="row-back"],
+  .cell[data-row="row-supp"] { background: var(--panel-3); }
+
+  .cell textarea {
+    width: 100%;
+    min-height: 120px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 7px 9px;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: vertical;
+    transition: border-color 150ms ease;
+  }
+  .cell textarea:focus { outline: none; border-color: var(--focus); }
+  .cell textarea::placeholder { color: var(--muted-2); }
+
+  /* Divider rows */
+  .cell.divider {
+    background: transparent;
+    grid-column: 1 / -1;
+    padding: 6px 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .cell.divider .line {
+    flex: 1;
+    height: 1px;
+    background: var(--border-strong);
+  }
+  .cell.divider .label-text {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* Feeling cells */
+  .feeling-picker {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .feeling-btn {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border);
+    background: #ffffff;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+    padding: 0;
+    transition: border-color 150ms ease, background 150ms ease, opacity 150ms ease;
+    opacity: 0.45;
+  }
+  .feeling-btn:hover { border-color: var(--border-strong); opacity: 0.7; }
+  .feeling-btn.selected {
+    border-color: var(--focus);
+    background: var(--accent-soft);
+    opacity: 1;
+  }
+
+  /* Emotion curve */
+  .curve-wrap {
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    padding: 16px 0;
+  }
+  .curve-wrap h3 {
+    margin: 0 0 4px 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .curve-wrap .curve-empty {
+    color: var(--muted-2);
+    font-size: 13px;
+    font-style: italic;
+    padding: 18px 0;
+    text-align: center;
+  }
+  .curve-svg {
+    width: 100%;
+    height: 110px;
+    display: block;
+  }
+  .curve-svg .grid-line { stroke: var(--border); stroke-width: 1; }
+  .curve-svg .axis-label { fill: var(--muted-2); font-size: 9.5px; }
+  .curve-svg .curve-path { fill: none; stroke: #292524; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .curve-svg .curve-area { fill: rgba(252,211,77,0.15); stroke: none; }
+  .curve-svg .curve-pt { fill: var(--accent); stroke: #292524; stroke-width: 2; }
+
+  /* Free-form notes */
+  .notes-block {
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    padding: 16px 0;
+  }
+  .notes-block label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .notes-block textarea {
+    width: 100%;
+    min-height: 90px;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .notes-block textarea:focus { outline: none; border-color: var(--focus); }
+  .notes-block textarea::placeholder { color: var(--muted-2); }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+  /* Help modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(28,25,23,0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+  .modal-overlay.open {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 28px 32px;
+    max-width: 580px;
+    width: calc(100% - 40px);
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    box-shadow: 0 8px 24px rgba(28,25,23,0.12);
+    transform: translateY(8px);
+    transition: transform 200ms ease;
+  }
+  .modal-overlay.open .modal { transform: translateY(0); }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+  .modal-header h2 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .modal-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 14px;
+    flex-shrink: 0;
+    transition: border-color 150ms ease, color 150ms ease;
+  }
+  .modal-close:hover { color: var(--text); border-color: var(--border-strong); }
+  .modal h3 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 20px 0 8px 0;
+  }
+  .modal h3:first-of-type { margin-top: 0; }
+  .modal p {
+    margin: 0 0 8px 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .modal p strong { color: var(--text); font-weight: 600; }
+  .modal ul {
+    margin: 0 0 10px 0;
+    padding-left: 18px;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .modal ul li strong { color: var(--text); }
+  .modal .chip-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .modal .chip {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-strong);
+    background: var(--panel);
+    color: var(--text);
+  }
+  .modal .chip.cyan,
+  .modal .chip.violet,
+  .modal .chip.orange,
+  .modal .chip.blue { color: var(--text); border-color: var(--border-strong); }
+  .modal .chip.pink { color: var(--red); border-color: var(--border-strong); }
+  .modal .chip.green { color: var(--green); border-color: var(--border-strong); }
+  .modal .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+  }
+  .help-btn {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 150ms ease, color 150ms ease;
+  }
+  .help-btn:hover { color: var(--text); border-color: var(--border-strong); }
+</style>
+</head>
+<body>
+
+<!-- Help modal -->
+<div class="modal-overlay" id="help-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header">
+      <h2 id="modal-title">How to use Journey Maps</h2>
+      <button class="modal-close" id="help-modal-close" aria-label="Close">&#x2715;</button>
+    </div>
+
+    <h3>What this is</h3>
+    <p>An NN/g customer journey map and service blueprint combined into a single grid — one per user journey. The top half is the customer view; the bottom half is the service layer. Both share the same columns (stages and moments).</p>
+
+    <hr class="divider" />
+
+    <h3>Navigating journeys</h3>
+    <p>Select any journey from the left rail. Journeys are grouped by category.</p>
+
+    <hr class="divider" />
+
+    <h3>Reading the grid</h3>
+    <p>Columns are <strong>stages</strong>, each containing one or more <strong>moments</strong>. Within each moment column, rows are stacked top-to-bottom:</p>
+    <div class="chip-row">
+      <span class="chip cyan">Doing</span>
+      <span class="chip violet">Thinking</span>
+      <span class="chip orange">Feeling</span>
+      <span class="chip pink">Pain points</span>
+      <span class="chip green">Opportunities</span>
+      <span class="chip blue">Evidence</span>
+    </div>
+    <p>A <strong>line of interaction</strong> separates the customer journey from the service blueprint. Below it:</p>
+    <div class="chip-row">
+      <span class="chip cyan">Frontstage</span>
+      <span class="chip violet">Backstage</span>
+      <span class="chip">Support processes</span>
+    </div>
+
+    <hr class="divider" />
+
+    <h3>What you can edit</h3>
+    <ul>
+      <li><strong>Scenario & User goal</strong> — editable in the journey header. Your changes shadow the built-in defaults.</li>
+      <li><strong>Thinking</strong> — free-text per moment. What is the user asking themselves at this point?</li>
+      <li><strong>Feeling</strong> — pick one emoji per moment. Drives the emotion curve below the grid.</li>
+      <li><strong>Pain points & Opportunities</strong> — your research findings. One item per line works well.</li>
+      <li><strong>Evidence</strong> — link to a source: an insight, a session recording, a ticket ID.</li>
+      <li><strong>Notes</strong> — a full-width freeform textarea below the grid for anything that doesn't fit a cell.</li>
+    </ul>
+    <p>The <strong>Doing, Frontstage, Backstage, and Support</strong> rows are pre-filled and read-only in the UI. Their content lives in the JSON block at the bottom of the file; edit the JSON directly to change them.</p>
+
+    <hr class="divider" />
+
+    <h3>Emotion curve</h3>
+    <p>As soon as two or more moments in a journey have a feeling set, a curve renders automatically below the grid. It traces sentiment across stages so you can spot where the journey dips.</p>
+
+    <hr class="divider" />
+
+    <h3>Saving & sharing</h3>
+    <ul>
+      <li><strong>Autosave</strong> — every edit saves to <em>this browser's</em> localStorage after a 350 ms pause. The rail shows "Saved" when it commits.</li>
+      <li><strong>Export</strong> — downloads a timestamped JSON of all annotations. Back it up or send it to a teammate.</li>
+      <li><strong>Import</strong> — loads a JSON file. You'll be asked whether to <em>replace</em> your local state or <em>merge</em> a colleague's annotations into yours (safe for collaboration).</li>
+    </ul>
+
+    <hr class="divider" />
+
+    <h3>Keyboard shortcut</h3>
+    <p>Press <strong>?</strong> anywhere on the page to open or close this guide.</p>
+  </div>
+</div>
+
+<div class="app">
+
+  <aside class="rail">
+    <h1>compagnon</h1>
+    <p class="tagline">NN/g customer journey + service blueprint, per journey. Edits autosave to this browser.</p>
+    <div class="toolbar">
+      <button class="tool-btn" id="export-btn">Export</button>
+      <button class="tool-btn" id="import-btn">Import</button>
+      <button class="help-btn" id="help-btn" title="How to use this tool">?</button>
+    </div>
+    <div class="save-status" id="save-status"></div>
+    <input type="file" id="import-file" accept="application/json" style="display:none" />
+    <div id="journey-list"></div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="empty-main">Pick a journey on the left.</div>
+  </main>
+</div>
+
+<!--
+  Schema:
+    actors[]    : { id, name, description }
+    categories[]: { id, title }
+    journeys[]  : {
+      id, title, actor, category, scenario, goal,
+      stages[] : {
+        title,
+        moments[] : { id, title, doing?, frontstage?, backstage?, support?, thinking?, pain?, opportunity?, evidence?, feeling? }
+      }
+    }
+
+  Stable ids on moments are required — annotations are keyed by moment id.
+  Prefix a cell value with [Assumption] to flag it as unvalidated.
+-->
+<script type="application/json" id="journeys-data">
+{
+  "actors": [
+    { "id": "utilisateur", "name": "Utilisateur Telegram", "description": "Une personne qui écrit au bot depuis Telegram. En phase 0, elle reçoit un écho : aucun personnage n'est encore branché." },
+    { "id": "exploitant", "name": "Exploitant", "description": "Qui déploie l'instance et la maintient. En pratique aujourd'hui : le développeur. Demain, quiconque tient le VPS." }
+  ],
+
+  "categories": [
+    { "id": "deploiement", "title": "Mise en service" },
+    { "id": "conversation", "title": "Conversation" },
+    { "id": "ecartes", "title": "Chemins écartés" },
+    { "id": "incidents", "title": "Incidents" }
+  ],
+
+  "journeys": [
+    {
+      "id": "mettre-en-service",
+      "title": "Mettre une instance en service",
+      "actor": "exploitant",
+      "category": "deploiement",
+      "scenario": "Un VPS nu, un nom de domaine, un jeton obtenu auprès de @BotFather. Il faut arriver à un bot qui répond.",
+      "goal": "Un webhook déclaré, en HTTPS valide, et un premier message qui revient.",
+      "stages": [
+        {
+          "title": "Préparer",
+          "moments": [
+            {
+              "id": "creer-bot-botfather",
+              "title": "Crée le bot chez @BotFather",
+              "doing": "Ouvre Telegram, parle à @BotFather, obtient un jeton de la forme <chiffres>:<35 caractères>.",
+              "thinking": "[Assumption] Ce jeton, c'est le mot de passe du bot — où est-ce que je le mets pour ne pas le perdre ni le publier ?",
+              "feeling": 4,
+              "pain": "[Assumption] Rien dans le projet ne rappelle que ce jeton donne un contrôle total du bot et qu'il faut le révoquer s'il fuit.",
+              "opportunity": "[Assumption] Une ligne dans .env.example sur la révocation (/revoke chez @BotFather) et sur le fait que le jeton voyage dans l'URL de chaque appel.",
+              "evidence": "",
+              "frontstage": "Conversation avec @BotFather dans Telegram.",
+              "backstage": "Hors du service : rien n'est encore déployé.",
+              "support": "Telegram, @BotFather."
+            },
+            {
+              "id": "remplir-env",
+              "title": "Remplit le .env",
+              "doing": "Copie .env.example vers .env, colle le jeton, tire un secret de webhook aléatoire, renseigne DOMAINE et COURRIEL_ACME.",
+              "thinking": "[Assumption] Ce « secret de webhook », je l'invente ? La commande openssl est donnée, tant mieux.",
+              "feeling": 4,
+              "pain": "[Assumption] Le secret doit faire au moins 32 caractères et n'accepter que [A-Za-z0-9_-] : une valeur choisie à la main tombe facilement à côté et n'échoue qu'au démarrage.",
+              "opportunity": "[Assumption] Une commande `compagnon secret` qui en génère un conforme, plutôt qu'un pipeline openssl à recopier.",
+              "evidence": "",
+              "frontstage": "Le fichier .env.example, commenté ligne par ligne.",
+              "backstage": "Aucun code exécuté à ce stade.",
+              "support": ".env.example ; openssl côté exploitant."
+            }
+          ]
+        },
+        {
+          "title": "Démarrer",
+          "moments": [
+            {
+              "id": "compose-up",
+              "title": "Lance docker compose up",
+              "doing": "Exécute `docker compose up --detach --build`. Deux conteneurs partent : bot et proxy.",
+              "thinking": "[Assumption] Si j'ai mal collé le jeton, est-ce que je vais le savoir tout de suite ou dans trois jours ?",
+              "feeling": 4,
+              "pain": "[Assumption] La construction tire cmake et clang pour aws-lc-sys : plusieurs minutes au premier build, sans indication que c'est normal.",
+              "opportunity": "[Assumption] Publier une image construite, pour que la mise en service ne dépende pas d'une compilation Rust sur le VPS.",
+              "evidence": "",
+              "frontstage": "Journaux de construction, puis les lignes de démarrage du service.",
+              "backstage": "Config::depuis_environnement valide chaque variable, y compris la FORME du jeton et du secret. Puis Canal::new, puis app::preparer appelle getMe AVANT de lier la socket.",
+              "support": "src/config.rs, src/app.rs, src/telegram/mod.rs ; Docker, Caddy."
+            },
+            {
+              "id": "echec-demarrage",
+              "title": "Le démarrage refuse, et dit pourquoi",
+              "doing": "Lit l'erreur si le service ne part pas : variable nommée, raison donnée, valeur jamais citée.",
+              "thinking": "[Assumption] Bien — il me dit quelle variable et pourquoi, sans me recracher mon secret dans les journaux.",
+              "feeling": 4,
+              "pain": "[Assumption] Un jeton bien formé mais révoqué échoue sur « jeton refusé par Telegram », ce qui est juste mais ne suggère pas d'aller le regénérer chez @BotFather.",
+              "opportunity": "[Assumption] Rattacher chaque échec de démarrage au geste qui le répare.",
+              "evidence": "",
+              "frontstage": "Une ligne tracing::error, puis le conteneur qui s'arrête avec le code 1.",
+              "backstage": "ErreurConfig nomme la variable ; ErreurDemarrage::JetonRefuse ne porte que la méthode appelée, jamais l'URL — le jeton en est un segment.",
+              "support": "src/config.rs ErreurConfig, src/app.rs ErreurDemarrage."
+            }
+          ]
+        },
+        {
+          "title": "Déclarer et vérifier",
+          "moments": [
+            {
+              "id": "declarer-webhook",
+              "title": "Déclare le webhook auprès de Telegram",
+              "doing": "Exécute `docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook`.",
+              "thinking": "[Assumption] Est-ce que Caddy a déjà obtenu le certificat ? Si non, Telegram va refuser l'adresse.",
+              "feeling": 3,
+              "pain": "[Assumption] Cette étape est manuelle et arrive APRÈS le démarrage : rien ne rappelle de la faire, et un bot déployé sans webhook déclaré reste muet sans qu'aucune sonde ne s'en aperçoive.",
+              "opportunity": "[Assumption] Faire dire à /health si un webhook est déclaré et vers quelle adresse, via getWebhookInfo — l'information existe côté Telegram et n'est pas consultée.",
+              "evidence": "",
+              "frontstage": "« webhook déclaré : https://... » puis le nombre de caractères du secret.",
+              "backstage": "cli::declarer_webhook construit un Canal et appelle setWebhook avec secret_token et allowed_updates=[\"message\"], drop_pending_updates=false.",
+              "support": "src/cli.rs, src/telegram/mod.rs declarer_webhook ; API Bot setWebhook."
+            },
+            {
+              "id": "sonder",
+              "title": "Vérifie que l'instance est saine",
+              "doing": "Exécute `docker compose exec bot compagnon sonde`.",
+              "thinking": "[Assumption] file_libre égale file_capacite : rien n'est coincé.",
+              "feeling": 4,
+              "pain": "[Assumption] La sonde dit que le service répond, pas qu'il est joignable depuis Telegram. Les deux échecs les plus probables — certificat non émis, webhook non déclaré — sont invisibles ici.",
+              "opportunity": "[Assumption] Une commande `compagnon diagnostic` qui interroge getWebhookInfo et rapporte last_error_message, que Telegram remplit précisément quand il n'arrive pas à livrer.",
+              "evidence": "",
+              "frontstage": "{\"statut\":\"ok\",\"version\":\"0.1.0\",\"depuis\":N,\"file_libre\":256,\"file_capacite\":256}",
+              "backstage": "cli::sonde interroge GET /health sur la boucle locale — l'adresse d'écoute 0.0.0.0 est traduite en 127.0.0.1. Le HEALTHCHECK Docker exécute la même commande.",
+              "support": "src/cli.rs sonde, src/http.rs sante ; Dockerfile HEALTHCHECK."
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "premier-message",
+      "title": "Écrit au bot pour la première fois",
+      "actor": "utilisateur",
+      "category": "conversation",
+      "scenario": "Quelqu'un ouvre la conversation avec le bot et lui écrit. En phase 0, il n'y a aucun personnage derrière.",
+      "goal": "Obtenir une réponse, et comprendre à quoi on a affaire.",
+      "stages": [
+        {
+          "title": "Aborder",
+          "moments": [
+            {
+              "id": "ouvrir-conversation",
+              "title": "Ouvre la conversation et appuie sur Démarrer",
+              "doing": "Trouve le bot par son nom d'utilisateur, ouvre la discussion, appuie sur le bouton Démarrer que Telegram affiche.",
+              "thinking": "[Assumption] Qui est-ce ? Qu'est-ce que je suis censé lui dire ?",
+              "feeling": 3,
+              "pain": "[Assumption] Le bouton Démarrer envoie /start, que le service traite comme un texte ordinaire et renvoie en écho. Aucun accueil, aucune description, aucune indication de ce qu'on peut faire — le premier contact ne dit rien.",
+              "opportunity": "[Assumption] Traiter /start à part dès la phase 1 : présenter la plateforme, proposer de choisir ou de créer un personnage. C'est le seul moment où l'attention est acquise.",
+              "evidence": "",
+              "frontstage": "La discussion Telegram, vide, avec un bouton Démarrer.",
+              "backstage": "Rien encore : Telegram n'envoie une mise à jour qu'au premier message.",
+              "support": "Client Telegram."
+            },
+            {
+              "id": "ecrire-message",
+              "title": "Écrit son premier message",
+              "doing": "Tape quelque chose et l'envoie.",
+              "thinking": "[Assumption] Voyons ce qu'il répond.",
+              "feeling": 3,
+              "pain": "",
+              "opportunity": "",
+              "evidence": "",
+              "frontstage": "Le message part, coche unique.",
+              "backstage": "Telegram POST /webhook. Caddy termine TLS et relaie vers bot:8080. webhook::recevoir authentifie le secret partagé en temps constant, analyse le JSON, appelle Update::extraire, puis try_send sur la file bornée et répond 200 — sans jamais parler à Telegram.",
+              "support": "Caddy, src/webhook.rs, src/telegram/mod.rs authentifier, src/telegram/types.rs extraire."
+            }
+          ]
+        },
+        {
+          "title": "Attendre",
+          "moments": [
+            {
+              "id": "voir-typing",
+              "title": "Voit « est en train d'écrire… »",
+              "doing": "Regarde l'en-tête de la discussion pendant que la réponse se prépare.",
+              "thinking": "[Assumption] Il a reçu, il rédige.",
+              "feeling": 4,
+              "pain": "[Assumption] En phase 0 l'indication et la réponse partent quasi simultanément : l'effet ne se voit pas. Et si sendChatAction échoue, l'échec est silencieux — c'est voulu, mais rien ne le mesure.",
+              "opportunity": "[Assumption] Dès qu'un modèle produira la réponse, tenir l'indication pendant toute la génération et la rafraîchir toutes les cinq secondes — Telegram l'efface passé ce délai.",
+              "evidence": "",
+              "frontstage": "« est en train d'écrire… » sous le nom du bot.",
+              "backstage": "worker::traiter appelle Canal::action(Typing) et ignore l'erreur : une indication non affichée ne doit pas empêcher la réponse.",
+              "support": "src/worker.rs traiter ; API Bot sendChatAction."
+            }
+          ]
+        },
+        {
+          "title": "Recevoir",
+          "moments": [
+            {
+              "id": "recevoir-echo",
+              "title": "Reçoit un écho, pas un personnage",
+              "doing": "Lit la réponse : son propre message entre guillemets, suivi d'une note disant que c'est un écho de phase 0.",
+              "thinking": "[Assumption] Ah — ce n'est pas encore fini. Au moins il me le dit.",
+              "feeling": 2,
+              "pain": "[Assumption] Il n'y a rien à faire de plus. Un utilisateur qui arrive ici n'a aucune raison de revenir, et rien ne lui dit quand ce sera prêt.",
+              "opportunity": "[Assumption] Tant que la phase 1 n'est pas là, réserver le bot à un cercle fermé plutôt que de laisser un écho public déprécier la première impression — elle ne se rejoue pas.",
+              "evidence": "",
+              "frontstage": "« <votre message> » suivi de « (écho — phase 0 : le transport fonctionne, aucun personnage n'est encore branché) ».",
+              "backstage": "worker::repondre construit le texte, Canal::envoyer_texte le découpe si besoin et envoie un sendMessage par morceau.",
+              "support": "src/worker.rs repondre, src/telegram/mod.rs envoyer_texte ; API Bot sendMessage."
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "reponse-longue",
+      "title": "Reçoit une réponse plus longue que ce que Telegram accepte",
+      "actor": "utilisateur",
+      "category": "conversation",
+      "scenario": "La réponse dépasse 4096 unités UTF-16 — le cas ordinaire dès qu'un personnage racontera quelque chose.",
+      "goal": "Lire la réponse en entier, sans coupure au milieu d'un mot.",
+      "stages": [
+        {
+          "title": "Recevoir",
+          "moments": [
+            {
+              "id": "reponse-decoupee",
+              "title": "Reçoit plusieurs messages d'affilée",
+              "doing": "Voit deux ou trois bulles arriver à la suite plutôt qu'une seule.",
+              "thinking": "[Assumption] C'est long, mais ça se lit — la coupure tombe entre deux phrases.",
+              "feeling": 4,
+              "pain": "[Assumption] Rien n'indique qu'un message est la suite du précédent. Sur une réponse en quatre bulles, on peut croire à quatre réponses distinctes.",
+              "opportunity": "[Assumption] Un marqueur discret de continuité, ou un délai court entre les morceaux pour que l'arrivée ressemble à quelqu'un qui écrit plutôt qu'à une salve.",
+              "evidence": "",
+              "frontstage": "Deux à quatre messages successifs.",
+              "backstage": "envoi::decouper coupe à 4096 unités UTF-16 — l'unité que Telegram compte, un emoji hors plan de base en valant deux. point_de_coupe recule jusqu'au dernier \\n, sinon la dernière espace, tant que le recul ne dépasse pas un quart du morceau.",
+              "support": "src/telegram/envoi.rs decouper, point_de_coupe."
+            },
+            {
+              "id": "echec-en-cours",
+              "title": "Un morceau n'arrive pas",
+              "doing": "Reçoit le début de la réponse, puis plus rien.",
+              "thinking": "[Assumption] Il s'est arrêté au milieu d'une phrase.",
+              "feeling": 2,
+              "pain": "[Assumption] Si un sendMessage échoue au troisième morceau, les deux premiers sont partis et ne sont pas rappelés — Telegram ne sait pas défaire un envoi. L'utilisateur garde une réponse tronquée sans savoir qu'elle l'est.",
+              "opportunity": "[Assumption] Reprendre l'envoi au morceau qui a échoué plutôt que d'abandonner la réponse, une fois la file durable en place.",
+              "evidence": "",
+              "frontstage": "Une réponse qui s'arrête net.",
+              "backstage": "Canal::envoyer_texte renvoie l'erreur au PREMIER morceau qui échoue. worker::traiter la journalise en distinguant transitoire et définitif via ErreurEnvoi::merite_une_reprise, mais ne reprend pas en phase 0.",
+              "support": "src/telegram/mod.rs envoyer_texte, src/telegram/envoi.rs merite_une_reprise."
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "message-non-retenu",
+      "title": "Envoie quelque chose que le service n'accepte pas",
+      "actor": "utilisateur",
+      "category": "ecartes",
+      "scenario": "Une photo, un autocollant, un message dans un groupe, ou un message corrigé après envoi.",
+      "goal": "Comprendre pourquoi rien ne revient.",
+      "stages": [
+        {
+          "title": "Envoyer",
+          "moments": [
+            {
+              "id": "envoyer-photo",
+              "title": "Envoie une photo ou un autocollant",
+              "doing": "Partage une image, un autocollant ou une note vocale.",
+              "thinking": "[Assumption] Il ne dit rien. Il n'a pas vu ?",
+              "feeling": 1,
+              "pain": "[Assumption] Silence complet. Le message est écarté (Ecart::SansTexte) et journalisé en DEBUG, mais l'utilisateur n'apprend rien — c'est indiscernable d'une panne, et c'est la friction la plus lourde du produit aujourd'hui.",
+              "opportunity": "[Assumption] Répondre une phrase courte sur les types non encore gérés, en distinguant « pas encore » de « jamais ». Le coût est d'un sendMessage ; le silence coûte la confiance.",
+              "evidence": "",
+              "frontstage": "Rien. Aucune réponse.",
+              "backstage": "Update::extraire renvoie Err(Ecart::SansTexte). webhook::recevoir journalise via journaliser_ecart au niveau DEBUG et répond 200 — pas de rejeu, à raison.",
+              "support": "src/telegram/types.rs extraire, src/webhook.rs journaliser_ecart."
+            },
+            {
+              "id": "corriger-message",
+              "title": "Corrige un message déjà envoyé",
+              "doing": "Modifie un message parti, pour rattraper une faute.",
+              "thinking": "[Assumption] Voilà, j'ai corrigé — il va tenir compte de la bonne version.",
+              "feeling": 2,
+              "pain": "[Assumption] La modification est écartée (Ecart::Modification) sans un mot. L'utilisateur croit avoir corrigé ; le service n'a rien vu.",
+              "opportunity": "[Assumption] Le choix de ne pas réécrire le passé est bon — la mémoire d'un personnage est un récit. Mais il devrait se dire, pas se subir.",
+              "evidence": "",
+              "frontstage": "Le message affiche « modifié ». Rien d'autre ne se passe.",
+              "backstage": "Update porte edited_message ; Update::extraire refuse d'emblée. Le champ est déclaré explicitement pour être distinguable d'une mise à jour inconnue dans les journaux.",
+              "support": "src/telegram/types.rs Update, Ecart::Modification."
+            },
+            {
+              "id": "ecrire-en-groupe",
+              "title": "Ajoute le bot à un groupe et l'interpelle",
+              "doing": "Ajoute le bot à une discussion de groupe et le mentionne.",
+              "thinking": "[Assumption] Il est là mais il ne répond pas. Il est cassé ?",
+              "feeling": 2,
+              "pain": "[Assumption] Le bot peut être ajouté à un groupe et y reste muet. Rien n'explique que le tête-à-tête est un choix — exposer une conversation intime à un groupe changerait la nature du produit.",
+              "opportunity": "[Assumption] Répondre une fois dans le groupe pour expliquer et inviter en privé, puis se taire ; ou refuser l'ajout via les réglages @BotFather (can_join_groups).",
+              "evidence": "",
+              "frontstage": "Le bot est présent dans la liste des membres et ne répond jamais.",
+              "backstage": "Update::extraire vérifie chat.genre == \"private\" et renvoie Err(Ecart::HorsPrive).",
+              "support": "src/telegram/types.rs extraire, Ecart::HorsPrive."
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "bot-muet",
+      "title": "Le bot cesse de répondre",
+      "actor": "utilisateur",
+      "category": "incidents",
+      "scenario": "Le service tourne, ou croit tourner, mais plus rien ne revient côté utilisateur.",
+      "goal": "Que le service se rétablisse, idéalement sans que personne n'ait à s'en plaindre.",
+      "stages": [
+        {
+          "title": "Panne silencieuse",
+          "moments": [
+            {
+              "id": "secret-desaccorde",
+              "title": "Le secret du webhook ne correspond plus",
+              "doing": "Écrit ; rien ne revient, indéfiniment.",
+              "thinking": "[Assumption] Il était là hier.",
+              "feeling": 1,
+              "pain": "[Assumption] Un secret changé dans .env sans setWebhook refait produit un 401 sur CHAQUE mise à jour. Le service est sain à sa propre sonde, Telegram est repoussé, et personne ne le voit — sauf à lire les journaux.",
+              "opportunity": "[Assumption] Faire remonter une rafale de 1001 comme une alerte, pas comme une ligne WARN parmi d'autres : c'est une signature de déploiement désaccordé, pas de bruit de fond Internet.",
+              "evidence": "",
+              "frontstage": "Aucune réponse. Rien ne signale l'échec côté utilisateur.",
+              "backstage": "Canal::authentifier refuse via egal_temps_constant. ApiError code 1001, statut 401, message « requête non authentifiée » — identique pour secret absent, vide ou erroné, pour que l'endpoint ne soit pas un oracle.",
+              "support": "src/telegram/mod.rs authentifier, src/error.rs ErrorCode::WebhookSecretInvalide."
+            },
+            {
+              "id": "certificat-expire",
+              "title": "Le certificat TLS a expiré",
+              "doing": "Écrit ; rien ne revient. Rien n'a changé de son côté.",
+              "thinking": "[Assumption] Peut-être qu'il est en maintenance.",
+              "feeling": 1,
+              "pain": "[Assumption] Telegram exige un HTTPS valide et cesse de livrer sans prévenir le service — qui ne peut pas savoir qu'on ne l'appelle plus. Le seul avertissement part par courriel à COURRIEL_ACME, et il faut que quelqu'un le lise.",
+              "opportunity": "[Assumption] Surveiller l'absence de trafic entrant : un service qui n'a rien reçu depuis N heures alors qu'il en recevait est un signal exploitable, et c'est le seul dont on dispose de l'intérieur.",
+              "evidence": "",
+              "frontstage": "Aucune réponse.",
+              "backstage": "Caddy renouvelle seul via Let's Encrypt (défi HTTP-01 sur le port 80). Si le port 80 est fermé, le renouvellement échoue en silence et la coupure arrive deux mois plus tard.",
+              "support": "Caddyfile, compose.yaml ports 80/443 ; Let's Encrypt."
+            }
+          ]
+        },
+        {
+          "title": "Saturation",
+          "moments": [
+            {
+              "id": "file-pleine",
+              "title": "La file est pleine",
+              "doing": "Écrit pendant un afflux ; la réponse tarde puis finit par arriver.",
+              "thinking": "[Assumption] Il rame, mais il finit par répondre.",
+              "feeling": 3,
+              "pain": "[Assumption] La contre-pression fonctionne — 503, Telegram rejoue — mais le rejeu peut arriver longtemps après, et l'utilisateur reçoit une réponse à un message qu'il a oublié.",
+              "opportunity": "[Assumption] Au-delà d'un certain retard, répondre au contexte plutôt qu'au message : une réponse tardive hors sujet est pire qu'une réponse absente.",
+              "evidence": "",
+              "frontstage": "Réponse très différée.",
+              "backstage": "try_send échoue sur file pleine ; webhook::recevoir renvoie ApiError code 9001, statut 503. Telegram rejoue. La file est bornée à 256 places : non bornée, un afflux ferait grossir la mémoire jusqu'à l'arrêt brutal.",
+              "support": "src/webhook.rs recevoir, src/worker.rs CAPACITE_FILE."
+            },
+            {
+              "id": "bot-bloque",
+              "title": "L'utilisateur a bloqué le bot",
+              "doing": "A bloqué le bot, puis le débloque plus tard.",
+              "thinking": "[Assumption] Je le débloque, on verra bien.",
+              "feeling": 3,
+              "pain": "[Assumption] Les messages qui lui étaient destinés pendant le blocage ont été abandonnés — 403 est classé définitif à raison, mais rien ne les reprend au déblocage.",
+              "opportunity": "[Assumption] Marquer la conversation comme bloquée plutôt que de perdre le fil, pour que la reprise soit possible quand la file durable existera.",
+              "evidence": "",
+              "frontstage": "Rien pendant le blocage ; la conversation reprend de zéro après.",
+              "backstage": "Telegram répond 403 « bot was blocked by the user ». ErreurEnvoi::merite_une_reprise renvoie false : refaire l'appel referait la même erreur. worker::traiter journalise en INFO — ce n'est pas un incident.",
+              "support": "src/telegram/envoi.rs merite_une_reprise, src/worker.rs traiter."
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "redeployer",
+      "title": "Redéploie sans perdre de message",
+      "actor": "exploitant",
+      "category": "deploiement",
+      "scenario": "Une nouvelle version est prête ; des gens sont en train d'écrire au bot.",
+      "goal": "Que rien de ce qui a été accusé ne disparaisse.",
+      "stages": [
+        {
+          "title": "Éteindre",
+          "moments": [
+            {
+              "id": "compose-down",
+              "title": "Arrête le conteneur",
+              "doing": "Exécute `docker compose up --detach --build` : Docker envoie SIGTERM au conteneur courant.",
+              "thinking": "[Assumption] Il y a des messages en cours de traitement — est-ce qu'ils passent à la trappe ?",
+              "feeling": 3,
+              "pain": "[Assumption] L'extinction ordonnée vide la file, mais un `kill -9` ou une coupure de courant perd ce qu'elle contient : elle vit en mémoire. Limite connue et bornée, levée par la file en base de la phase 1.",
+              "opportunity": "[Assumption] Faire dire à la sonde combien de messages sont en attente, pour qu'un exploitant puisse choisir son moment.",
+              "evidence": "",
+              "frontstage": "Les journaux : « arrêt demandé », « vidage de la file », « worker arrêté, file vidée », « arrêt terminé ».",
+              "backstage": "app::signal_d_arret écoute SIGINT et SIGTERM. axum::serve termine les requêtes en cours, puis le routeur est relâché — ce qui ferme l'entrée de la file — puis worker::tourner draine jusqu'à ce que le canal soit vide, et seulement alors le processus rend la main.",
+              "support": "src/app.rs signal_d_arret, Prepare::servir, src/worker.rs tourner."
+            },
+            {
+              "id": "reprise",
+              "title": "La nouvelle version repart",
+              "doing": "Attend que le HEALTHCHECK passe au vert, vérifie avec `compagnon sonde`.",
+              "thinking": "[Assumption] Et le webhook, il est toujours déclaré ?",
+              "feeling": 4,
+              "pain": "[Assumption] Le webhook survit au redéploiement — il vit chez Telegram, pas dans le conteneur — mais rien ne le confirme, et l'exploitant n'a aucun moyen de le vérifier depuis le service.",
+              "opportunity": "[Assumption] Consulter getWebhookInfo au démarrage et journaliser l'adresse déclarée : une ligne, et le doute disparaît à chaque redéploiement.",
+              "evidence": "",
+              "frontstage": "Le conteneur passe healthy en une quinzaine de secondes.",
+              "backstage": "app::preparer refait getMe avant de lier la socket. Les mises à jour non livrées pendant la coupure sont rejouées par Telegram, qui réessaie tant qu'il n'a pas eu de 2xx.",
+              "support": "src/app.rs preparer ; Dockerfile HEALTHCHECK, politique de rejeu de Telegram."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<script>
+(function () {
+  const data = JSON.parse(document.getElementById("journeys-data").textContent);
+  const STORAGE_KEY = "journey-map-annotations";
+  const FEELINGS = [
+    { score: 1, emoji: "\u{1F621}", label: "Very frustrated" },
+    { score: 2, emoji: "\u{1F641}", label: "Frustrated" },
+    { score: 3, emoji: "\u{1F610}", label: "Neutral" },
+    { score: 4, emoji: "\u{1F642}", label: "Pleased" },
+    { score: 5, emoji: "\u{1F604}", label: "Delighted" }
+  ];
+
+  const actorById = Object.fromEntries(data.actors.map(a => [a.id, a]));
+
+  // ---- Storage ----
+  function loadAll() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+  function saveAll(state) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+  let state = loadAll();
+  function ensureJourneyState(jid) {
+    if (!state[jid]) state[jid] = { _meta: {}, moments: {} };
+    if (!state[jid].moments) state[jid].moments = {};
+    if (!state[jid]._meta) state[jid]._meta = {};
+    return state[jid];
+  }
+
+  let saveTimer = null;
+  const saveStatusEl = document.getElementById("save-status");
+  function flashSaved() {
+    saveStatusEl.textContent = "Saved · " + new Date().toLocaleTimeString();
+    saveStatusEl.classList.add("flash");
+    clearTimeout(flashSaved._t);
+    flashSaved._t = setTimeout(() => saveStatusEl.classList.remove("flash"), 1200);
+  }
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveAll(state); flashSaved(); }, 350);
+  }
+
+  // ---- Journey list ----
+  const listEl = document.getElementById("journey-list");
+  const journeysByCategory = {};
+  data.journeys.forEach(j => {
+    (journeysByCategory[j.category] = journeysByCategory[j.category] || []).push(j);
+  });
+
+  let activeJourneyId = null;
+  data.categories.forEach(cat => {
+    const flows = journeysByCategory[cat.id];
+    if (!flows || !flows.length) return;
+    const h = document.createElement("div");
+    h.className = "category-header";
+    h.textContent = cat.title;
+    listEl.appendChild(h);
+    flows.forEach(j => {
+      const btn = document.createElement("button");
+      btn.className = "journey-item";
+      btn.dataset.id = j.id;
+      const actor = actorById[j.actor];
+      btn.innerHTML = `
+        <div class="j-title">${j.title}</div>
+        <div class="j-actor">${actor ? actor.name : ""}</div>
+      `;
+      btn.addEventListener("click", () => selectJourney(j.id));
+      listEl.appendChild(btn);
+    });
+  });
+
+  // ---- Render journey ----
+  const mainEl = document.getElementById("main");
+
+  function selectJourney(id) {
+    activeJourneyId = id;
+    document.querySelectorAll(".journey-item").forEach(el => {
+      el.classList.toggle("active", el.dataset.id === id);
+    });
+    const j = data.journeys.find(x => x.id === id);
+    if (!j) return;
+    renderJourney(j);
+  }
+
+  function renderJourney(j) {
+    const actor = actorById[j.actor] || {};
+    const jstate = ensureJourneyState(j.id);
+
+    // Flatten all moments to know total count
+    const allMoments = [];
+    j.stages.forEach(stage => {
+      stage.moments.forEach(m => {
+        allMoments.push({ stage, moment: m });
+      });
+    });
+
+    mainEl.innerHTML = "";
+
+    // Header block
+    const header = document.createElement("section");
+    header.className = "journey-header";
+    header.innerHTML = `
+      <h2>${j.title}</h2>
+      <div class="actor-line">Primary actor <span class="actor-chip">${actor.name || ""}</span></div>
+      <div class="header-fields">
+        <div class="field-block">
+          <label>Scenario</label>
+          <textarea data-meta="scenario" placeholder="Who is this user, what's bringing them here?"></textarea>
+        </div>
+        <div class="field-block">
+          <label>User goal</label>
+          <textarea data-meta="goal" placeholder="What does success look like for them?"></textarea>
+        </div>
+      </div>
+    `;
+    mainEl.appendChild(header);
+
+    // Prefill meta fields (use stored value if any, otherwise fall back to JSON's scenario/goal)
+    const scenarioTA = header.querySelector('[data-meta="scenario"]');
+    const goalTA = header.querySelector('[data-meta="goal"]');
+    scenarioTA.value = jstate._meta.scenario != null ? jstate._meta.scenario : (j.scenario || "");
+    goalTA.value     = jstate._meta.goal     != null ? jstate._meta.goal     : (j.goal     || "");
+    [scenarioTA, goalTA].forEach(ta => {
+      ta.addEventListener("input", () => {
+        jstate._meta[ta.dataset.meta] = ta.value;
+        scheduleSave();
+        autoSize(ta);
+      });
+      autoSize(ta);
+    });
+
+    // Grid
+    const gridWrap = document.createElement("section");
+    gridWrap.className = "grid-wrap";
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    grid.style.setProperty("--moments", allMoments.length);
+    gridWrap.appendChild(grid);
+
+    // Row 1: Stage headers (with colspan via repeating cells -- each stage spans its moments count)
+    grid.appendChild(cell("label", "Stage"));
+    j.stages.forEach(stage => {
+      stage.moments.forEach((m, i) => {
+        const c = document.createElement("div");
+        c.className = "cell stage";
+        if (i === 0) c.textContent = stage.title;
+        if (i > 0) c.style.borderLeft = "none";
+        grid.appendChild(c);
+      });
+    });
+
+    // Row 2: Moment headers
+    grid.appendChild(cell("label", "Moment"));
+    let momentIdx = 0;
+    allMoments.forEach(({ moment }) => {
+      momentIdx++;
+      const c = document.createElement("div");
+      c.className = "cell moment-header";
+      c.innerHTML = `<span class="moment-num">${momentIdx}</span>${moment.title}`;
+      grid.appendChild(c);
+    });
+
+    // -------- Customer journey rows --------
+    addReadonlyRow(grid, allMoments, "Doing", "row-doing", m => m.doing);
+    addEditableRow(grid, j, allMoments, "Thinking", "row-think", "thinking", "What is going through their head?");
+    addFeelingRow(grid, j, allMoments);
+    addEditableRow(grid, j, allMoments, "Pain points", "row-pain", "pain", "What hurts here?");
+    addEditableRow(grid, j, allMoments, "Opportunities", "row-oppty", "opportunity", "What could we improve?");
+    addEditableRow(grid, j, allMoments, "Evidence", "row-evid", "evidence", "Artefacts they take away (email, doc, screen).");
+
+    // Divider -- line of interaction
+    addDivider(grid, "Line of interaction");
+
+    // -------- Service blueprint rows --------
+    addReadonlyRow(grid, allMoments, "Frontstage", "row-front", m => m.frontstage);
+    addDivider(grid, "Line of visibility");
+    addReadonlyRow(grid, allMoments, "Backstage", "row-back", m => m.backstage);
+    addDivider(grid, "Line of internal interaction");
+    addReadonlyRow(grid, allMoments, "Support processes", "row-supp", m => m.support);
+
+    mainEl.appendChild(gridWrap);
+
+    // Emotion curve
+    const curveWrap = document.createElement("section");
+    curveWrap.className = "curve-wrap";
+    curveWrap.innerHTML = `<h3>Emotion curve</h3><div id="curve-body"></div>`;
+    mainEl.appendChild(curveWrap);
+    renderCurve(j, allMoments);
+
+    // Notes
+    const notes = document.createElement("section");
+    notes.className = "notes-block";
+    notes.innerHTML = `
+      <label>Free-form notes for this journey</label>
+      <textarea data-meta="notes" placeholder="Hypotheses, research links, things to test, anything else."></textarea>
+    `;
+    const notesTA = notes.querySelector("textarea");
+    notesTA.value = jstate._meta.notes || "";
+    notesTA.addEventListener("input", () => {
+      jstate._meta.notes = notesTA.value;
+      scheduleSave();
+      autoSize(notesTA);
+    });
+    autoSize(notesTA);
+    mainEl.appendChild(notes);
+  }
+
+  function cell(extraClass, text) {
+    const c = document.createElement("div");
+    c.className = "cell " + (extraClass || "");
+    if (text != null) {
+      if (extraClass && extraClass.includes("label")) {
+        c.innerHTML = `<span class="accent-dot"></span>${text}`;
+      } else {
+        c.textContent = text;
+      }
+    }
+    return c;
+  }
+
+  function addReadonlyRow(grid, allMoments, labelText, rowColor, getter) {
+    const lbl = cell("label", labelText);
+    lbl.dataset.row = rowColor;
+    grid.appendChild(lbl);
+    allMoments.forEach(({ moment }) => {
+      const c = document.createElement("div");
+      c.className = "cell readonly";
+      c.dataset.row = rowColor;
+      const v = getter(moment);
+      if (v && v.trim()) c.textContent = v;
+      else c.innerHTML = `<span class="empty">—</span>`;
+      grid.appendChild(c);
+    });
+  }
+
+  function addEditableRow(grid, journey, allMoments, labelText, rowColor, field, placeholder) {
+    const lbl = cell("label", labelText);
+    lbl.dataset.row = rowColor;
+    grid.appendChild(lbl);
+    const jstate = ensureJourneyState(journey.id);
+    allMoments.forEach(({ moment }) => {
+      const c = document.createElement("div");
+      c.className = "cell";
+      c.dataset.row = rowColor;
+      const ta = document.createElement("textarea");
+      ta.placeholder = placeholder || "";
+      const mstate = jstate.moments[moment.id] = jstate.moments[moment.id] || {};
+      ta.value = mstate[field] != null ? mstate[field] : (moment[field] || "");
+      autoSize(ta);
+      ta.addEventListener("input", () => {
+        mstate[field] = ta.value;
+        scheduleSave();
+        autoSize(ta);
+      });
+      c.appendChild(ta);
+      grid.appendChild(c);
+    });
+  }
+
+  function addFeelingRow(grid, journey, allMoments) {
+    const lbl = cell("label", "Feeling");
+    grid.appendChild(lbl);
+    const jstate = ensureJourneyState(journey.id);
+    allMoments.forEach(({ moment }) => {
+      const c = document.createElement("div");
+      c.className = "cell";
+      const picker = document.createElement("div");
+      picker.className = "feeling-picker";
+      const mstate = jstate.moments[moment.id] = jstate.moments[moment.id] || {};
+      const effectiveFeeling = () => (mstate.feeling != null ? mstate.feeling : moment.feeling);
+      FEELINGS.forEach(f => {
+        const btn = document.createElement("button");
+        btn.className = "feeling-btn" + (effectiveFeeling() === f.score ? " selected" : "");
+        btn.title = f.label;
+        btn.textContent = f.emoji;
+        btn.addEventListener("click", () => {
+          const current = effectiveFeeling();
+          mstate.feeling = (current === f.score) ? null : f.score;
+          picker.querySelectorAll(".feeling-btn").forEach((b, i) => {
+            b.classList.toggle("selected", FEELINGS[i].score === effectiveFeeling());
+          });
+          scheduleSave();
+          renderCurve(journey, allMoments);
+        });
+        picker.appendChild(btn);
+      });
+      c.appendChild(picker);
+      grid.appendChild(c);
+    });
+  }
+
+  function addDivider(grid, text) {
+    const d = document.createElement("div");
+    d.className = "cell divider";
+    d.innerHTML = `<span class="line"></span><span class="label-text">${text}</span><span class="line"></span>`;
+    grid.appendChild(d);
+  }
+
+  function renderCurve(j, allMoments) {
+    const body = document.getElementById("curve-body");
+    if (!body) return;
+    body.innerHTML = "";
+    const jstate = ensureJourneyState(j.id);
+    const points = allMoments.map(({ moment }, i) => {
+      const stored = (jstate.moments[moment.id] || {}).feeling;
+      const f = stored != null ? stored : moment.feeling;
+      return f != null ? { x: i, score: f } : null;
+    });
+    const present = points.filter(Boolean);
+    if (present.length < 2) {
+      body.innerHTML = `<div class="curve-empty">Pick a feeling on at least two moments to see the curve.</div>`;
+      return;
+    }
+    const W = body.clientWidth || 800;
+    const H = 110;
+    const padL = 30, padR = 16, padT = 14, padB = 18;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    const xFor = i => padL + (allMoments.length === 1 ? innerW/2 : (i / (allMoments.length - 1)) * innerW);
+    const yFor = score => padT + (1 - (score - 1) / 4) * innerH;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "curve-svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    // Grid lines
+    [1, 2, 3, 4, 5].forEach(s => {
+      const y = yFor(s);
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "grid-line");
+      line.setAttribute("x1", padL);
+      line.setAttribute("x2", W - padR);
+      line.setAttribute("y1", y);
+      line.setAttribute("y2", y);
+      svg.appendChild(line);
+      const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      lbl.setAttribute("class", "axis-label");
+      lbl.setAttribute("x", 4);
+      lbl.setAttribute("y", y + 3);
+      lbl.textContent = FEELINGS[s-1].emoji;
+      svg.appendChild(lbl);
+    });
+
+    // Curve path through known points (skip nulls, draw straight segments between known)
+    let d = "";
+    let first = true;
+    points.forEach((p, i) => {
+      if (p == null) return;
+      const x = xFor(i);
+      const y = yFor(p.score);
+      d += (first ? "M" : " L") + " " + x.toFixed(1) + " " + y.toFixed(1);
+      first = false;
+    });
+    if (d) {
+      // Area fill under the curve
+      const firstPt = present[0];
+      const lastPt = present[present.length - 1];
+      const areaD = d + ` L ${xFor(lastPt.x).toFixed(1)} ${yFor(1).toFixed(1)} L ${xFor(firstPt.x).toFixed(1)} ${yFor(1).toFixed(1)} Z`;
+      const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      area.setAttribute("class", "curve-area");
+      area.setAttribute("d", areaD);
+      svg.appendChild(area);
+
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("class", "curve-path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    }
+
+    // Points
+    points.forEach((p, i) => {
+      if (p == null) return;
+      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      c.setAttribute("class", "curve-pt");
+      c.setAttribute("cx", xFor(i));
+      c.setAttribute("cy", yFor(p.score));
+      c.setAttribute("r", 4);
+      svg.appendChild(c);
+    });
+
+    body.appendChild(svg);
+  }
+
+  function autoSize(ta) {
+    ta.style.height = "auto";
+    ta.style.height = Math.max(120, ta.scrollHeight + 2) + "px";
+  }
+
+  // ---- Toolbar ----
+  document.getElementById("export-btn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 16).replace(":", "");
+    a.href = url;
+    a.download = `journey-annotations-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  const importInput = document.getElementById("import-file");
+  document.getElementById("import-btn").addEventListener("click", () => importInput.click());
+  importInput.addEventListener("change", () => {
+    const file = importInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const incoming = JSON.parse(reader.result);
+        if (typeof incoming !== "object" || incoming === null) throw new Error("Not an object");
+        if (!confirm("Replace your current annotations with the imported file? (Cancel to merge instead.)")) {
+          // Merge per-journey
+          Object.keys(incoming).forEach(jid => {
+            const cur = ensureJourneyState(jid);
+            const inc = incoming[jid] || {};
+            cur._meta = Object.assign({}, cur._meta, inc._meta || {});
+            cur.moments = Object.assign({}, cur.moments, inc.moments || {});
+          });
+        } else {
+          state = incoming;
+        }
+        saveAll(state);
+        flashSaved();
+        if (activeJourneyId) {
+          const j = data.journeys.find(x => x.id === activeJourneyId);
+          if (j) renderJourney(j);
+        }
+      } catch (e) {
+        alert("Couldn't import: " + e.message);
+      } finally {
+        importInput.value = "";
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  // Auto-select first journey
+  if (data.journeys[0]) selectJourney(data.journeys[0].id);
+
+  // Help modal
+  const helpModal = document.getElementById("help-modal");
+  const helpBtn = document.getElementById("help-btn");
+  const helpClose = document.getElementById("help-modal-close");
+
+  function openHelp() { helpModal.classList.add("open"); }
+  function closeHelp() { helpModal.classList.remove("open"); }
+
+  helpBtn.addEventListener("click", openHelp);
+  helpClose.addEventListener("click", closeHelp);
+  helpModal.addEventListener("click", e => { if (e.target === helpModal) closeHelp(); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "?" && !e.target.matches("input, textarea")) openHelp();
+    if (e.key === "Escape") closeHelp();
+  });
+})();
+</script>
+
+</body>
+</html>

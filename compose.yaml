@@ -1,0 +1,63 @@
+# Déploiement du service.
+#
+#   cp .env.example .env   puis renseigner
+#   docker compose up --detach --build
+#   docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
+#
+# Deux conteneurs : le service, et un proxy qui termine TLS. Telegram refuse un webhook qui
+# n'est pas en HTTPS avec un certificat valide — ce n'est pas un confort, c'est la condition
+# pour recevoir le moindre message.
+
+name: compagnon
+
+services:
+  bot:
+    build:
+      context: .
+    image: compagnon:${VERSION_IMAGE:-local}
+    restart: unless-stopped
+    # Les secrets viennent du .env, jamais de ce fichier : celui-ci est commité, pas lui.
+    env_file:
+      - ${FICHIER_ENV:-.env}
+    # Aucun port publié : le service n'est joignable que par le proxy, sur le réseau interne
+    # du projet. Publier 8080 sur l'hôte offrirait /health à quiconque scanne la machine.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # Le port 80 ne sert pas à servir : il sert à obtenir et renouveler le certificat (défi
+    # HTTP-01 de Let's Encrypt). Le fermer fait échouer le renouvellement en silence, deux
+    # mois plus tard.
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAINE: ${DOMAINE:?renseigner DOMAINE dans le .env — le certificat en dépend}
+      COURRIEL_ACME: ${COURRIEL_ACME:?renseigner COURRIEL_ACME dans le .env — c'est la seule alerte d'expiration de certificat}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Perdre ce volume force une réémission à chaque démarrage, et Let's Encrypt plafonne
+      # le nombre d'émissions par domaine et par semaine.
+      - certificats:/data
+      - config_proxy:/config
+    depends_on:
+      bot:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  certificats:
+  config_proxy:

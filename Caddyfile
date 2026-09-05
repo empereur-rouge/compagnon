@@ -1,0 +1,54 @@
+# Terminaison TLS du webhook.
+#
+# Caddy obtient et renouvelle seul un certificat Let's Encrypt pour {$DOMAINE}. Rien à
+# renouveler à la main, et c'est voulu : un certificat expiré coupe le webhook, et personne ne
+# s'en aperçoit avant qu'un utilisateur signale un bot devenu muet.
+
+{
+	email {$COURRIEL_ACME}
+	# Une instance n'a pas d'usage pour l'API d'administration de Caddy, et l'exposer sur le
+	# réseau du projet donnerait à tout conteneur compromis de quoi détourner le webhook.
+	admin off
+}
+
+{$DOMAINE} {
+	# CE BLOC N'EST PAS COSMÉTIQUE.
+	#
+	# Telegram authentifie ses appels par un en-tête, X-Telegram-Bot-Api-Secret-Token. Caddy
+	# journalise les en-têtes de requête et n'en caviarde d'office qu'une poignée — Cookie,
+	# Set-Cookie, Authorization, Proxy-Authorization. Un en-tête personnalisé n'en fait pas
+	# partie : sans ce filtre, le secret du webhook s'écrit en clair dans les journaux du
+	# proxy, à chaque message reçu.
+	#
+	# C'est le pendant exact de ce que fait le service lui-même, qui bannit ce secret de ses
+	# propres journaux (cf. `telegram::authentifier` et `http::span_requete`). Une protection
+	# tenue d'un seul côté n'en est pas une : quiconque lit `docker compose logs proxy`
+	# obtiendrait de quoi forger des messages entrants.
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>headers>X-Telegram-Bot-Api-Secret-Token delete
+			}
+		}
+	}
+
+	# Seul le webhook est public. /health reste sur le réseau interne, où Docker l'interroge ;
+	# un exploitant qui veut le voir passe par `docker compose exec bot compagnon sonde`.
+	handle /webhook* {
+		reverse_proxy bot:8080 {
+			# Le service acquitte en quelques millisecondes : il authentifie, enfile, répond.
+			# Un délai plus long masquerait un service bloqué, et Telegram rejouerait des
+			# mises à jour déjà enfilées.
+			transport http {
+				response_header_timeout 10s
+			}
+		}
+	}
+
+	handle {
+		# Ni page d'erreur, ni bannière : rien qui indique ce qui tourne ici.
+		respond 404
+	}
+}
