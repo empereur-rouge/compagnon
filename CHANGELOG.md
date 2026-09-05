@@ -5,6 +5,36 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.8.0] - 2026-09-05
+
+Phase 1.2e — la création, et le geste d'exploitation qui manquait.
+
+### Added
+
+- **feat(cli)** : `compagnon catalogues`, `compagnon compagnon creer`,
+  `compagnon compagnon montrer`, `compagnon utilisateur age`. Les arguments sont des paires
+  `clé=valeur` : sept choix en positionnel se seraient inversés sans qu'on le voie jusqu'à la
+  lecture du prompt. Le dépôt ne gagne pas d'analyseur d'arguments pour autant.
+- **feat(cli)** : `compagnon utilisateur age` existe parce que la phase 1.1 exigeait une
+  vérification d'âge **sans donner aucun moyen de la poser** — la seule façon était une écriture
+  SQL directe, ce qu'il a fallu faire à la main lors de l'essai de bout en bout. Le parcours
+  d'inscription la remplacera pour l'utilisateur ; celle-ci reste pour le support.
+
+### Changed
+
+- **change(personnage)** : le type `Cible` — quelle composition, archétypes ou tons — devient
+  public et sert aux deux modules. Les trois noms de table voyagent toujours ensemble ; passés
+  séparément ils faisaient huit arguments, et rien n'empêchait de mélanger la table de liaison
+  des archétypes avec la référence des tons.
+
+### Notes
+
+- La création ne pose que des **choix**, puis appelle la validation. Il n'existe aucun chemin,
+  dans la CLI ni ailleurs, par lequel un texte saisi atteindrait le modèle.
+- Éprouvé sur le vrai chemin : un compagnon créé sur la base de production de développement,
+  avec la fusion Yandere résolue depuis le catalogue, et un nom refusé qui n'a laissé aucun
+  prompt derrière lui.
+
 ## [0.7.0] - 2026-09-05
 
 Phase 1.2d — la modération, et ce qu'elle protège réellement.
@@ -418,6 +448,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |
 | 0.7.0 | 2026-09-05 | 1.2d — modération |
 | 0.6.0 | 2026-09-05 | 1.2c — composition du prompt |
 | 0.5.0 | 2026-09-05 | 1.2b — tables du compagnon |

@@ -337,22 +337,38 @@ pub async fn charger(
     })
 }
 
-/// Laquelle des deux compositions charger.
-#[derive(Clone, Copy)]
-enum Cible {
+/// Laquelle des deux compositions — archétypes ou tons — est visée.
+///
+/// Les deux partagent exactement la même forme : une table de liaison, une table de référence,
+/// une colonne. Les faire voyager séparément demandait trois arguments à chaque fonction qui
+/// les touche, et rien n'empêchait de les mélanger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cible {
+    /// Les archétypes : ce que le compagnon **est**.
     Archetypes,
+    /// Les tons : la façon dont il **parle**.
     Tons,
 }
 
 impl Cible {
-    /// La table de liaison et la table de référence correspondantes.
+    /// La table de liaison, la table de référence, et la colonne qui les relie.
     ///
-    /// Interpolées dans la requête, ce qui n'est sûr que parce qu'elles viennent d'un énuméré
+    /// Interpolées dans les requêtes, ce qui n'est sûr que parce qu'elles viennent d'un énuméré
     /// fermé — aucune chaîne extérieure ne les atteint.
-    const fn tables(self) -> (&'static str, &'static str, &'static str) {
+    #[must_use]
+    pub const fn tables(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Self::Archetypes => ("personnage_archetypes", "ref_archetypes", "archetype_id"),
             Self::Tons => ("personnage_tons", "ref_tons", "ton_id"),
+        }
+    }
+
+    /// Le préfixe des arguments de ligne de commande — `archetype`, `archetype2`…
+    #[must_use]
+    pub const fn prefixe(self) -> &'static str {
+        match self {
+            Self::Archetypes => "archetype",
+            Self::Tons => "ton",
         }
     }
 }

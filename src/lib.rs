@@ -48,6 +48,7 @@
 pub mod admission;
 pub mod app;
 pub mod cli;
+pub mod cli_compagnon;
 pub mod config;
 pub mod db;
 pub mod error;
