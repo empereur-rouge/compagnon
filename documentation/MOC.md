@@ -2,7 +2,7 @@
 tags: [moc]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.1.0
+version: v0.2.0
 ---
 
 # Carte du projet — compagnon
@@ -22,7 +22,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 | Fiche | Phase | Sujet |
 |---|---|---|
-| [[transport-telegram]] | 0 | webhook, authentification, file, envoi, découpage |
+| [[transport-telegram]] | 0 | webhook **et scrutation**, authentification, file, envoi, découpage |
 | [[contrat-d-erreur]] | 0 | codes numériques, messages publics, journalisation |
 
 ## Ce qui viendra
@@ -44,6 +44,8 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 - **Le jeton Telegram est dans l'URL** — donc aucune URL n'atteint un journal, une erreur ou un
   `Debug`. Vaut aussi pour le proxy : voir la section correspondante de [[transport-telegram]].
 - **Tête-à-tête uniquement** — les messages de groupe sont écartés à l'extraction.
+- **Deux portes, un seul chemin** — webhook en production, scrutation sur un poste de travail ;
+  tout ce qui suit l'admission est rigoureusement identique, et testé comme tel.
 - **Le webhook n'appelle jamais Telegram** — il authentifie, enfile, acquitte. La production
   d'une réponse appartient au worker.
 - **Tout est validé au démarrage** — une faute de déploiement fait échouer le démarrage, pas le

@@ -2,7 +2,7 @@
 tags: [feature]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.1.0
+version: v0.2.0
 ---
 
 # Transport Telegram
@@ -31,6 +31,28 @@ Telegram ──POST /webhook──▶ Caddy (TLS) ──▶ Axum
                                           sendMessage ──────▶ Telegram
 ```
 
+## Les deux portes d'entrée
+
+Telegram propose deux façons de livrer, et elles **s'excluent** — tant qu'un webhook est
+déclaré, `getUpdates` répond `409`.
+
+| | Webhook | Scrutation (`compagnon ecouter`) |
+|---|---|---|
+| Exige | domaine, certificat valide, machine joignable | une connexion sortante |
+| Usage | production | éprouver le bot depuis un poste de travail |
+| Entrée | `POST /webhook` → `webhook::recevoir` | `getUpdates` → `scrutation::tourner` |
+| Ensuite | `admission::retenir` → file → worker | **identique** |
+| File pleine | `503`, Telegram rejoue | attend une place |
+
+La colonne « ensuite » est le point important : seule la porte change. Un mode de développement
+qui emprunterait un chemin parallèle ne dirait rien du comportement en production — l'identité
+est structurelle (`admission` est appelé par les deux) et éprouvée par `tests/scrutation.rs`.
+
+**Redonner l'`offset` vaut accusé de réception.** Telegram conserve une mise à jour jusqu'à ce
+qu'on en réclame une plus récente. Un `offset` qui n'avance pas rejoue le même lot sans fin ;
+c'est pourquoi une mise à jour *écartée* fait quand même avancer l'`offset` — sinon un message
+de groupe bloquerait la file derrière lui, sans qu'aucune erreur ne soit journalisée.
+
 ## Configuration
 
 Tout vient de l'environnement, tout est validé au démarrage. Voir `.env.example`.
@@ -54,6 +76,8 @@ docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
 | Module | Fichier | Rôle |
 |---|---|---|
 | `telegram` | `src/telegram/mod.rs` | client de l'API Bot, authentification du webhook |
+| `admission` | `src/admission.rs` | ce qu'on retient d'une mise à jour, quelle que soit la porte |
+| `scrutation` | `src/scrutation.rs` | réception par `getUpdates`, sans domaine ni TLS |
 | `telegram::types` | `src/telegram/types.rs` | formes reçues, extraction vers `Recu`, motifs d'`Ecart` |
 | `telegram::envoi` | `src/telegram/envoi.rs` | enveloppe de réponse, erreurs, découpage |
 | `webhook` | `src/webhook.rs` | réception, mise en file, contrat de statut |
@@ -76,6 +100,10 @@ docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
 | `envoi::point_de_coupe` | `src/telegram/envoi.rs` | recule au dernier `\n`, sinon à la dernière espace |
 | `ErreurEnvoi::merite_une_reprise` | `src/telegram/envoi.rs` | sépare le transitoire du définitif |
 | `webhook::recevoir` | `src/webhook.rs` | analyse, enfile, acquitte (déjà authentifié) |
+| `admission::retenir` | `src/admission.rs` | filtre et journalise, pour les deux portes |
+| `scrutation::tourner` | `src/scrutation.rs` | scrute, accuse par l'`offset`, jusqu'à l'arrêt |
+| `Canal::recevoir_mises_a_jour` | `src/telegram/mod.rs` | `getUpdates`, avec un délai propre |
+| `app::scruter` | `src/app.rs` | retire le webhook, puis scrute avec le worker de production |
 | `Panne::classer` | `src/telegram/envoi.rs` | réduit une erreur `reqwest` à sa nature, sans retenir l'URL |
 | `Ecart::niveau` | `src/telegram/types.rs` | porte son niveau de journal, pour un `match` exhaustif |
 | `worker::tourner` | `src/worker.rs` | consomme jusqu'à file fermée **et** vidée |

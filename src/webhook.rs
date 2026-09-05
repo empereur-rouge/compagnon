@@ -21,11 +21,10 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 
-use tracing::Level;
-
+use crate::admission;
 use crate::error::{ApiError, ErrorCode};
 use crate::http::EtatApp;
-use crate::telegram::types::{Ecart, Update};
+use crate::telegram::types::Update;
 
 /// Reçoit une mise à jour, déjà authentifiée.
 ///
@@ -45,12 +44,11 @@ pub async fn recevoir(State(etat): State<EtatApp>, corps: Bytes) -> Result<Statu
     };
     let update_id = update.update_id;
 
-    let recu = match update.extraire() {
-        Ok(recu) => recu,
-        Err(ecart) => {
-            journaliser_ecart(update_id, ecart);
-            return Ok(StatusCode::OK);
-        }
+    // Le filtrage et sa journalisation vivent dans `admission`, partagés avec la scrutation :
+    // ce qui arrive par l'une ou l'autre porte doit être traité rigoureusement pareil, sinon
+    // éprouver le bot en scrutation ne dirait rien de son comportement en production.
+    let Some(recu) = admission::retenir(update) else {
+        return Ok(StatusCode::OK);
     };
 
     let chat_id = recu.chat_id;
@@ -68,25 +66,6 @@ pub async fn recevoir(State(etat): State<EtatApp>, corps: Bytes) -> Result<Statu
 
     tracing::info!(update_id, chat_id, octets = taille, "message mis en file");
     Ok(StatusCode::OK)
-}
-
-/// Journalise un écart au niveau que l'écart lui-même porte.
-///
-/// Le niveau vient de [`Ecart::niveau`] et non d'un `match` écrit ici : un bras attrape-tout
-/// aurait fait tomber en silence toute variante ajoutée par une phase suivante — `voice` en
-/// phase 4 — dans `debug!`, où personne ne l'aurait vue. C'est le même mécanisme que
-/// [`ErrorCode::niveau`], et il n'y en a donc qu'un à connaître.
-///
-/// Aucun code d'erreur HTTP n'est joint : ces mises à jour reçoivent `200`, et accoler un code
-/// de réponse à une requête réussie ferait tomber deux situations sans rapport sous le même
-/// `grep`.
-fn journaliser_ecart(update_id: i64, ecart: Ecart) {
-    let motif = ecart.libelle();
-    match ecart.niveau() {
-        Level::WARN => tracing::warn!(update_id, motif, "mise à jour écartée"),
-        Level::INFO => tracing::info!(update_id, motif, "mise à jour écartée"),
-        _ => tracing::debug!(update_id, motif, "mise à jour écartée"),
-    }
 }
 
 /// Lit le corps, ou l'absorbe en le journalisant.

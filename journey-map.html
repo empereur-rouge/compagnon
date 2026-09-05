@@ -782,6 +782,78 @@
       ]
     },
     {
+      "id": "eprouver-sans-deployer",
+      "title": "Éprouve le bot sans rien déployer",
+      "actor": "exploitant",
+      "category": "deploiement",
+      "scenario": "Un jeton tout juste obtenu de @BotFather, un portable, aucun serveur. La question est simplement : est-ce que ça reçoit et est-ce que ça répond ?",
+      "goal": "Écrire au bot depuis Telegram et voir une réponse arriver, sans avoir rien mis en ligne.",
+      "stages": [
+        {
+          "title": "Obtenir un jeton",
+          "moments": [
+            {
+              "id": "botfather-nouveau-bot",
+              "title": "Demande un bot à @BotFather",
+              "doing": "Envoie /newbot à @BotFather, choisit un nom d'affichage puis un nom d'utilisateur finissant par « bot », et reçoit le jeton.",
+              "thinking": "[Assumption] Le nom d'utilisateur est pris, il faut en trouver un autre — c'est le seul frottement.",
+              "feeling": 4,
+              "pain": "[Assumption] @BotFather refuse les noms déjà pris sans en suggérer, ce qui peut demander plusieurs essais.",
+              "opportunity": "[Assumption] Rien à faire côté produit : c'est le parcours de Telegram.",
+              "evidence": "",
+              "frontstage": "La conversation avec @BotFather, qui rend un jeton de la forme <chiffres>:<35 caractères>.",
+              "backstage": "Hors du service.",
+              "support": "Telegram, @BotFather."
+            },
+            {
+              "id": "coller-le-jeton",
+              "title": "Colle le jeton dans .env",
+              "doing": "Copie .env.example vers .env et y colle le jeton. Rien d'autre n'est requis pour ce mode.",
+              "thinking": "[Assumption] Il demande aussi un secret de webhook et un domaine — est-ce que j'en ai besoin là tout de suite ?",
+              "feeling": 3,
+              "pain": "[Assumption] TELEGRAM_SECRET_WEBHOOK reste obligatoire au démarrage alors que la scrutation ne s'en sert pas : il faut inventer une valeur conforme pour un mode qui l'ignore.",
+              "opportunity": "[Assumption] Rendre le secret de webhook facultatif quand la commande est « ecouter », ou en générer un à la volée dans ce mode.",
+              "evidence": "",
+              "frontstage": ".env.example, commenté ligne par ligne.",
+              "backstage": "Config::depuis_environnement valide toutes les variables au démarrage, y compris la forme du jeton et du secret.",
+              "support": "src/config.rs."
+            }
+          ]
+        },
+        {
+          "title": "Écouter",
+          "moments": [
+            {
+              "id": "lancer-ecouter",
+              "title": "Lance compagnon ecouter",
+              "doing": "Exécute `cargo run -- ecouter` et lit les journaux.",
+              "thinking": "[Assumption] Il me dit quel bot il a reconnu — c'est bien le mien.",
+              "feeling": 4,
+              "pain": "[Assumption] Le retrait du webhook est journalisé mais reste un effet notable : lancer ce mode avec le jeton de production coupe la production.",
+              "opportunity": "[Assumption] Refuser de scruter si un webhook est déclaré vers un domaine autre que localhost, à moins d'un drapeau explicite.",
+              "evidence": "",
+              "frontstage": "« jeton validé par Telegram », le nom du bot, « webhook retiré », puis « scrutation démarrée ».",
+              "backstage": "app::scruter appelle getMe, puis deleteWebhook — Telegram répondrait 409 à getUpdates tant qu'un webhook est déclaré — puis lance le worker de production et entre dans scrutation::tourner.",
+              "support": "src/app.rs scruter, src/scrutation.rs, API Bot getMe/deleteWebhook/getUpdates."
+            },
+            {
+              "id": "premier-aller-retour",
+              "title": "Écrit au bot et voit la réponse arriver",
+              "doing": "Ouvre la conversation dans Telegram, envoie un message, et regarde le terminal en même temps.",
+              "thinking": "[Assumption] La ligne « message reçu » apparaît, puis la réponse s'affiche dans Telegram. Le circuit est bon.",
+              "feeling": 5,
+              "pain": "[Assumption] La réponse est un écho : le circuit est prouvé, mais rien du produit ne l'est encore.",
+              "opportunity": "[Assumption] C'est le moment où la phase 1 se branche — le transport n'aura plus besoin d'être redémontré.",
+              "evidence": "",
+              "frontstage": "Dans le terminal : « message reçu » avec le prénom et la taille. Dans Telegram : « est en train d'écrire… » puis l'écho.",
+              "backstage": "scrutation::tourner reçoit le lot, admission::retenir filtre — le MÊME code que le webhook —, la file transporte, worker::traiter répond. L'offset avance ensuite pour accuser auprès de Telegram.",
+              "support": "src/scrutation.rs, src/admission.rs, src/worker.rs."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "premier-message",
       "title": "Écrit au bot pour la première fois",
       "actor": "utilisateur",

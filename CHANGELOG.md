@@ -5,6 +5,38 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.2.0] - 2026-09-05
+
+Recevoir sans rien déployer.
+
+### Added
+
+- **feat(scrutation)** : `compagnon ecouter` reçoit par `getUpdates` au lieu d'attendre un
+  appel entrant. Ni domaine, ni certificat, ni tunnel, ni compte tiers : une connexion sortante
+  suffit, donc n'importe quel poste de travail. Sans cela, le premier essai d'un développeur
+  contre un vrai compte Telegram imposait un tunnel et une dépendance externe.
+- **feat(telegram)** : `Canal::recevoir_mises_a_jour`, avec un délai propre à cet appel — une
+  scrutation longue tient la connexion plusieurs dizaines de secondes, très au-delà du délai
+  qui convient à tout le reste. Sans cette dérogation, le client trancherait sa propre attente
+  et la scrutation dégénérerait en sondage serré.
+
+### Changed
+
+- **change(admission)** : le filtrage d'une mise à jour et sa journalisation quittent
+  `webhook.rs` pour un module `admission`, appelé par les deux portes d'entrée. Un mode de
+  développement qui emprunterait un chemin parallèle ne dirait rien du comportement en
+  production ; l'identité des deux chemins est désormais structurelle, et testée.
+- **change(scrutation)** : le webhook est retiré au démarrage de `ecouter`, et le retrait est
+  journalisé. Telegram interdit de mêler les deux modes et répond `409` sinon — un `409` est
+  d'ailleurs traduit en message nommant les deux causes réparables.
+
+### Notes
+
+- La production reste au webhook : la scrutation tient une connexion ouverte en permanence, ne
+  se répartit pas sur plusieurs instances, et redemande à Telegram au lieu d'être servie.
+- **Scruter avec le jeton de production coupe la production**, puisque le webhook est retiré.
+  C'est journalisé, pas silencieux.
+
 ## [0.1.0] - 2026-09-05
 
 Phase 0 — la boucle de transport, prouvée de bout en bout.
@@ -124,4 +156,5 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.2.0 | 2026-09-05 | 0 — réception par scrutation |
 | 0.1.0 | 2026-09-05 | 0 — la boucle de transport Telegram |

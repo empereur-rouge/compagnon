@@ -112,6 +112,34 @@ impl FauxTelegram {
         }
     }
 
+    /// Fait livrer un lot de mises à jour à la première scrutation, puis plus rien.
+    ///
+    /// Le second montage rend une liste vide avec un léger délai : c'est ce que fait Telegram
+    /// quand rien n'arrive, et sans ce délai la boucle de scrutation tournerait aussi vite que
+    /// la machine le permet pendant toute la durée du test.
+    pub async fn livrer(&self, lot: Vec<Value>) {
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{JETON}/getUpdates")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "result": lot
+            })))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&self.serveur)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{JETON}/getUpdates")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"ok": true, "result": []}))
+                    .set_delay(Duration::from_millis(150)),
+            )
+            .with_priority(2)
+            .mount(&self.serveur)
+            .await;
+    }
+
     /// Tous les appels reçus sur une méthode de l'API Bot, dans l'ordre.
     pub async fn appels(&self, methode: &str) -> Vec<Request> {
         let attendu = format!("/bot{JETON}/{methode}");
@@ -125,13 +153,33 @@ impl FauxTelegram {
     }
 
     /// Les corps JSON des appels reçus sur une méthode.
+    ///
+    /// Un corps vide rend `Null` plutôt que de faire échouer la lecture : `getMe` et
+    /// `deleteWebhook` ne transportent rien, et c'est légitime.
     pub async fn corps(&self, methode: &str) -> Vec<Value> {
         self.appels(methode)
             .await
             .iter()
             .map(|requete| {
-                serde_json::from_slice(&requete.body).expect("le service envoie du JSON valide")
+                if requete.body.is_empty() {
+                    Value::Null
+                } else {
+                    serde_json::from_slice(&requete.body).expect("le service envoie du JSON valide")
+                }
             })
+            .collect()
+    }
+
+    /// Les méthodes appelées, dans l'ordre où Telegram les a reçues.
+    ///
+    /// Sert à éprouver un ORDRE, ce que le seul décompte des appels ne permet pas.
+    pub async fn ordre_des_appels(&self) -> Vec<String> {
+        self.serveur
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|requete| requete.url.path().rsplit('/').next().map(str::to_owned))
             .collect()
     }
 
