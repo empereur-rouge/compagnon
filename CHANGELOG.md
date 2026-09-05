@@ -5,6 +5,40 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.10.0] - Unreleased
+
+Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
+
+### Added
+
+- **feat(secret)** : `Secret`, une valeur qui ne **peut pas** atterrir dans un journal. Pas de
+  `Display` — `format!("{secret}")` ne compile pas — pas de `Deref<Target = str>`, et un `Debug`
+  qui rend `<masqué, N caractères>`. Ce projet a laissé fuir un secret deux fois, et les deux
+  fois la règle existait dans un commentaire plutôt que dans un type. `exposer()` est nommé pour
+  être désagréable : `rg 'exposer\('` donne la liste exhaustive des points de sortie.
+- **feat(modele)** : le trait `ClientModele`, avec `ContexteConversation`, `ReponseModele` et
+  `ErreurModele`. Le fournisseur de calcul va changer — serverless d'abord, GPU dédié ensuite —
+  et le worker ne doit pas bouger pour autant.
+- **feat(modele)** : `ErreurModele::merite_une_reprise()` distingue ce qui se rejoue (délai,
+  connexion, génération vide, `429`, `5xx`) de ce qui se refera échouer à l'identique (`400`,
+  `401`, `403`). Sans cette distinction, une clé invalide consomme toutes les tentatives et un
+  délai dépassé perd le message de quelqu'un qui l'attend.
+- **feat(modele)** : `modele::double` — un `ClientModele` qui joue un scénario écrit d'avance
+  puis en répète le dernier acte. « Échoue deux fois puis aboutit » s'écrit donc sans variante
+  dédiée, et les pannes du fournisseur — qui sont rares, non reproductibles, et arrivent en
+  production — deviennent éprouvables.
+- **test** : six tests sur le contrat, dont `le_prompt_arrive_au_modele_tel_quel`, qui fixe la
+  moitié aval d'une garantie décidée en 1.2 : le worker lira `prompt_systeme_genere` plutôt que
+  de recomposer les traits, parce que c'est le texte que la modération a approuvé.
+
+### Changed
+
+- **change(modele)** : `ErreurModele` classe la panne au lieu de la transporter — `Panne` est un
+  enum nu, `Refuse` ne porte qu'un `u16`, et le corps d'une réponse de fournisseur n'entre nulle
+  part. Même correctif que `telegram::envoi::Panne`, appliqué **avant** la fuite plutôt qu'après :
+  un message d'erreur de fournisseur reprend souvent la requête, donc le prompt système, donc
+  tout ce que le compagnon est.
+
 ## [0.9.1] - 2026-09-05
 
 ### Changed

@@ -40,6 +40,8 @@
 //! | [`db`] | PostgreSQL : connexion, migrations, file à bail |
 //! | [`personnage`] | les traits d un compagnon, et le prompt qu ils composent |
 //! | [`http`] | routeur, état partagé, sonde de santé |
+//! | [`modele`] | le moteur qui écrit les réponses, et son double de test |
+//! | [`secret`] | une valeur qui ne peut pas atterrir dans un journal |
 //! | [`scrutation`] | réception sans domaine ni TLS, pour éprouver le bot en vrai |
 //! | [`telegram`] | client de l'API Bot : authentification, envoi, découpage |
 //! | [`webhook`] | réception des mises à jour |
@@ -56,8 +58,10 @@ pub mod error;
 pub mod fixtures;
 pub mod horloge;
 pub mod http;
+pub mod modele;
 pub mod personnage;
 pub mod scrutation;
+pub mod secret;
 pub mod telegram;
 pub mod telemetry;
 pub mod webhook;
