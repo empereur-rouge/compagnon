@@ -5,7 +5,7 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-05
 
 Phase 0 — la boucle de transport, prouvée de bout en bout.
 
@@ -124,4 +124,4 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
-| 0.1.0 | non publiée | 0 — transport |
+| 0.1.0 | 2026-09-05 | 0 — la boucle de transport Telegram |
