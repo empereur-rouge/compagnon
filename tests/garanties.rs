@@ -353,3 +353,82 @@ async fn un_curseur_de_l_utilisateur_ne_se_pose_pas_sur_un_compagnon() {
 
     jetable.detruire().await;
 }
+
+#[tokio::test]
+async fn une_option_retiree_du_catalogue_est_refusee_a_l_ecriture() {
+    let jetable = BaseDeTest::creer().await;
+    let base = Base::ouvrir(&jetable.url).await.expect("base migrée");
+    let pool = base.pool();
+
+    sqlx::query("insert into utilisateurs (id) values (9)")
+        .execute(pool)
+        .await
+        .expect("utilisateur");
+
+    // Ce test était IMPOSSIBLE à écrire avant que les écritures ne quittent le module de ligne
+    // de commande : elles y étaient privées. Les tests avaient donc recopié leur SQL, en
+    // omettant le `and actif` — ils construisaient des compagnons sur des lignes désactivées,
+    // que la production refuse, et aucun ne pouvait attraper une régression sur ce filtre.
+    //
+    // Or c'est le mécanisme dont la migration 0003 fait un argument de sûreté : « retirer une
+    // option, c'est passer un `actif` à faux — pas auditer du texte libre ». Il n'était éprouvé
+    // nulle part.
+    sqlx::query("update ref_archetypes set actif = false where code = 'possessif'")
+        .execute(pool)
+        .await
+        .expect("retrait de l'option");
+
+    let mut choix = std::collections::HashMap::new();
+    choix.insert("archetype".to_owned(), "possessif".to_owned());
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let compagnon = compagnon::db::personnages::creer(&mut tx, 9, "Léa")
+        .await
+        .expect("création");
+    let refus = compagnon::db::personnages::poser_traits(
+        &mut tx,
+        compagnon,
+        &choix,
+        compagnon::personnage::Cible::Archetypes,
+    )
+    .await;
+    println!(
+        "archétype « possessif » retiré du catalogue -> {}",
+        if refus.is_err() {
+            "REFUSÉ"
+        } else {
+            "accepté"
+        }
+    );
+    if let Err(erreur) = &refus {
+        println!("  message : {erreur}");
+    }
+    assert!(
+        refus.is_err(),
+        "une option retirée doit être refusée : c'est le mécanisme de retrait rétroactif"
+    );
+
+    // Et la même option, réactivée, repasse — le retrait est bien réversible.
+    tx.rollback().await.expect("annulation");
+    sqlx::query("update ref_archetypes set actif = true where code = 'possessif'")
+        .execute(pool)
+        .await
+        .expect("réactivation");
+
+    let mut tx = pool.begin().await.expect("transaction");
+    let compagnon = compagnon::db::personnages::creer(&mut tx, 9, "Léa")
+        .await
+        .expect("création");
+    compagnon::db::personnages::poser_traits(
+        &mut tx,
+        compagnon,
+        &choix,
+        compagnon::personnage::Cible::Archetypes,
+    )
+    .await
+    .expect("une option active doit passer");
+    println!("archétype « possessif » réactivé            -> accepté");
+    tx.rollback().await.expect("annulation");
+
+    jetable.detruire().await;
+}
