@@ -5,6 +5,26 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.9.1] - 2026-09-05
+
+### Changed
+
+- **change(db)** : les écritures d'un compagnon quittent le module de ligne de commande pour
+  `db::personnages`. Elles y étaient privées, avec deux conséquences dont la seconde s'était
+  déjà produite : le parcours d'inscription de la phase 1.3 n'aurait pu en réutiliser aucune, et
+  **les tests les avaient déjà recopiées** — en omettant le `and actif` que la production
+  applique. Ils construisaient donc des compagnons sur des lignes de catalogue désactivées, et
+  aucun test ne pouvait attraper une régression sur ce filtre, qui est pourtant le mécanisme de
+  retrait dont la migration 0003 fait un argument de sûreté.
+
+### Added
+
+- **test** : `une_option_retiree_du_catalogue_est_refusee_a_l_ecriture` — le test qui était
+  **impossible** à écrire tant que les écritures étaient privées. Le mécanisme de retrait
+  rétroactif n'était éprouvé nulle part.
+- **test** : les fabriques de compagnon passent désormais par le chemin de production, comme le
+  harnais l'avait fait pour `verifier_age` en phase 1.1.
+
 ## [0.9.0] - 2026-09-05
 
 Revue `/simplify` de la phase 1.2. Quatre agents, une cinquantaine de findings. Ce qui suit
@@ -510,6 +530,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.9.1 | 2026-09-05 | écritures partagées, filtre actif éprouvé |
 | 0.9.0 | 2026-09-05 | revue 1.2 — garanties sur le texte |
 | 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |
 | 0.7.0 | 2026-09-05 | 1.2d — modération |

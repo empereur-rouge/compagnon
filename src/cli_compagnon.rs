@@ -17,11 +17,10 @@
 
 use std::collections::HashMap;
 
-use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::db::{Base, ErreurBase, catalogues, utilisateurs};
+use crate::db::{Base, ErreurBase, catalogues, personnages, utilisateurs};
 use crate::personnage::{self, Cible, moderation};
 
 /// Ce qui a empêché une commande d'aboutir.
@@ -34,21 +33,10 @@ pub enum ErreurCompagnon {
     /// Un argument manque, ou ne désigne rien.
     #[error("{0}")]
     Usage(String),
-}
 
-/// Vrai si cette erreur vient de ce que l'utilisateur a tapé, et non d'une panne.
-///
-/// Sans cette distinction, une connexion perdue ou un délai de pool était annoncé à
-/// l'exploitant comme sa faute de frappe — c'est la discrimination *state-divergence vs
-/// transient* du projet, prise à l'envers.
-///
-/// Les trois codes retenus sont ceux qu'une saisie fautive produit : violation de `not null`
-/// (un code qui ne désigne rien rend `null`), de clé étrangère, et de contrainte `check`.
-fn faute_de_saisie(erreur: &sqlx::Error) -> bool {
-    erreur
-        .as_database_error()
-        .and_then(|e| e.code())
-        .is_some_and(|code| matches!(code.as_ref(), "23502" | "23503" | "23514"))
+    /// Une écriture de compagnon a échoué.
+    #[error("{0}")]
+    Ecriture(#[from] crate::db::personnages::ErreurEcriture),
 }
 
 /// Découpe des arguments `clé=valeur` en table.
@@ -159,19 +147,11 @@ pub async fn creer(config: &Config, mots: &[&str]) -> Result<(), ErreurCompagnon
     // qui se retrouvait avec un compagnon vide et aucun moyen d'en créer un autre.
     let mut tx = pool.begin().await.map_err(ErreurBase::Requete)?;
 
-    let personnage_id: Uuid = sqlx::query_scalar(
-        "insert into personnages (utilisateur_id, nom) values ($1, $2) returning id",
-    )
-    .bind(utilisateur)
-    .bind(nom)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(ErreurBase::Requete)?;
-
-    poser_apparence(&mut tx, personnage_id, &champs).await?;
-    poser_traits(&mut tx, personnage_id, &champs, Cible::Archetypes).await?;
-    poser_traits(&mut tx, personnage_id, &champs, Cible::Tons).await?;
-    poser_curseurs(&mut tx, personnage_id, &champs).await?;
+    let personnage_id = personnages::creer(&mut tx, utilisateur, nom).await?;
+    personnages::poser_apparence(&mut tx, personnage_id, &champs).await?;
+    personnages::poser_traits(&mut tx, personnage_id, &champs, Cible::Archetypes).await?;
+    personnages::poser_traits(&mut tx, personnage_id, &champs, Cible::Tons).await?;
+    personnages::poser_curseurs(&mut tx, personnage_id, &champs).await?;
 
     sqlx::query("insert into personnage_parametres_interaction (personnage_id) values ($1)")
         .bind(personnage_id)
@@ -259,148 +239,6 @@ pub async fn verifier_age(config: &Config, utilisateur: &str) -> Result<(), Erre
         "note : la déclaration simple ne suffit pas dans les juridictions qui exigent une \
          vérification robuste — voir DECISIONS-MODELES et la revue légale par pays."
     );
-    Ok(())
-}
-
-async fn poser_apparence(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    personnage_id: Uuid,
-    champs: &HashMap<String, String>,
-) -> Result<(), ErreurCompagnon> {
-    sqlx::query(
-        "insert into personnage_apparence
-            (personnage_id, genre_id, tranche_age_id, morphologie_id, couleur_cheveux_id,
-             longueur_cheveux, couleur_yeux_id, style_vestimentaire_id)
-         select $1,
-                (select id from ref_genres where code = $2 and actif),
-                (select id from ref_tranches_age_apparent where code = $3 and actif),
-                (select id from ref_morphologies where code = $4 and actif),
-                (select id from ref_couleurs_cheveux where code = $5 and actif),
-                $6,
-                (select id from ref_couleurs_yeux where code = $7 and actif),
-                (select id from ref_styles_vestimentaires where code = $8 and actif)",
-    )
-    .bind(personnage_id)
-    .bind(exiger(champs, "genre")?)
-    .bind(exiger(champs, "age")?)
-    .bind(exiger(champs, "morphologie")?)
-    .bind(champs.get("cheveux").map(String::as_str))
-    .bind(champs.get("longueur_cheveux").map(String::as_str))
-    .bind(champs.get("yeux").map(String::as_str))
-    .bind(champs.get("style").map(String::as_str))
-    .execute(&mut **tx)
-    .await
-    .map_err(|erreur| {
-        // Un code inconnu rend `null` dans un `select`, donc échoue sur la contrainte
-        // `not null`. On distingue ce cas d'une vraie panne plutôt que de tout annoncer comme
-        // une faute de frappe — et on n'interpole SURTOUT pas le `Display` de l'erreur : la
-        // migration 0001 dit pourquoi, et ce chemin a déjà été emprunté une fois dans ce projet.
-        if faute_de_saisie(&erreur) {
-            ErreurCompagnon::Usage(
-                "un code d'apparence ne désigne rien au catalogue. \
-                 Voir « compagnon catalogues »."
-                    .to_owned(),
-            )
-        } else {
-            ErreurCompagnon::Base(ErreurBase::Requete(erreur))
-        }
-    })?;
-    Ok(())
-}
-
-async fn poser_traits(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    personnage_id: Uuid,
-    champs: &HashMap<String, String>,
-    cible: Cible,
-) -> Result<(), ErreurCompagnon> {
-    let prefixe = cible.prefixe();
-    let principal = exiger(champs, prefixe)?;
-    poser_un_trait(tx, personnage_id, cible, principal, "principal", None).await?;
-
-    for rang in 1_i16..=2 {
-        if let Some(code) = champs.get(&format!("{prefixe}{}", rang + 1)) {
-            poser_un_trait(tx, personnage_id, cible, code, "secondaire", Some(rang)).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Pose un trait, en refusant un code qui ne désigne rien au catalogue.
-///
-/// La `Cible` porte les trois noms de table, qui voyagent toujours ensemble : passés
-/// séparément, ils faisaient huit arguments et rien n'empêchait de mélanger la table de liaison
-/// des archétypes avec la référence des tons.
-async fn poser_un_trait(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    personnage_id: Uuid,
-    cible: Cible,
-    code: &str,
-    role: &str,
-    rang: Option<i16>,
-) -> Result<(), ErreurCompagnon> {
-    let (liaison, reference, colonne) = cible.tables();
-    let touchees = sqlx::query(&format!(
-        "insert into {liaison} (personnage_id, {colonne}, role, rang)
-         select $1, id, $3, $4 from {reference} where code = $2 and actif"
-    ))
-    .bind(personnage_id)
-    .bind(code)
-    .bind(role)
-    .bind(rang)
-    .execute(&mut **tx)
-    .await
-    .map_err(ErreurBase::Requete)?
-    .rows_affected();
-
-    if touchees == 0 {
-        return Err(ErreurCompagnon::Usage(format!(
-            "« {code} » ne désigne rien dans {reference}. Voir « compagnon catalogues »."
-        )));
-    }
-    Ok(())
-}
-
-async fn poser_curseurs(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    personnage_id: Uuid,
-    champs: &HashMap<String, String>,
-) -> Result<(), ErreurCompagnon> {
-    for curseur in catalogues::parametres_gradues_dans(tx).await? {
-        // Les curseurs portés par l'utilisateur ne se posent pas sur un compagnon : la base le
-        // refuse désormais, et l'ignorer ici évite d'aller se le faire dire.
-        if curseur.porte_par != "compagnon" {
-            continue;
-        }
-        let valeur = match champs.get(&curseur.code) {
-            Some(brut) => brut.parse::<Decimal>().map_err(|_| {
-                ErreurCompagnon::Usage(format!(
-                    "{}= doit être un nombre entre 0 et 1",
-                    curseur.code
-                ))
-            })?,
-            None => curseur.valeur_defaut,
-        };
-        sqlx::query(
-            "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-             values ($1, $2, $3)",
-        )
-        .bind(personnage_id)
-        .bind(&curseur.code)
-        .bind(valeur)
-        .execute(&mut **tx)
-        .await
-        .map_err(|erreur| {
-            if faute_de_saisie(&erreur) {
-                ErreurCompagnon::Usage(format!(
-                    "{} = {valeur} sort des bornes acceptées (0,00 à 1,00)",
-                    curseur.code
-                ))
-            } else {
-                ErreurCompagnon::Base(ErreurBase::Requete(erreur))
-            }
-        })?;
-    }
     Ok(())
 }
 

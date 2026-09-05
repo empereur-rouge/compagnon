@@ -17,6 +17,7 @@
 
 pub mod catalogues;
 pub mod file;
+pub mod personnages;
 pub mod utilisateurs;
 
 use std::time::Duration;

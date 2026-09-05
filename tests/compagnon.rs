@@ -13,6 +13,8 @@ mod harnais;
 
 use compagnon::db::Base;
 use harnais::base::BaseDeTest;
+use std::collections::HashMap;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -38,7 +40,12 @@ async fn deux_compagnons() -> (BaseDeTest, Base) {
     (jetable, base)
 }
 
-/// Pose un archétype sur un compagnon, en désignant le code du catalogue.
+/// Pose un archétype sur un compagnon, par le SQL brut.
+///
+/// Volontairement direct : ces tests éprouvent ce que la BASE refuse — un second principal, un
+/// troisième secondaire, un rang incohérent — donc ils doivent pouvoir soumettre des formes que
+/// la production ne construirait jamais. Les fabriques de compagnon complet, elles, passent par
+/// `db::personnages` (voir `compagnon_complet`).
 async fn poser_archetype(
     pool: &PgPool,
     compagnon: Uuid,
@@ -48,7 +55,7 @@ async fn poser_archetype(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into personnage_archetypes (personnage_id, archetype_id, role, rang)
-         select $1, id, $3, $4 from ref_archetypes where code = $2",
+         select $1, id, $3, $4 from ref_archetypes where code = $2 and actif",
     )
     .bind(compagnon)
     .bind(code)
@@ -303,63 +310,55 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
     jetable.detruire().await;
 }
 
-/// Compose un compagnon complet en base : apparence, personnalité, curseurs, interaction.
+/// Compose un compagnon complet **par le chemin de production**.
+///
+/// Appelle `db::personnages`, comme la ligne de commande et comme le fera l'inscription depuis
+/// Telegram. La version précédente réécrivait ce SQL à la main et avait déjà divergé : elle
+/// omettait le `and actif`, donc construisait des compagnons sur des lignes de catalogue
+/// désactivées que la production refuse — et aucun test ne pouvait attraper une régression sur
+/// ce filtre.
 async fn compagnon_complet(pool: &PgPool, id: Uuid, curseurs: &[(&str, &str)]) {
-    sqlx::query(
-        "insert into personnage_apparence
-            (personnage_id, genre_id, tranche_age_id, morphologie_id, couleur_cheveux_id,
-             longueur_cheveux, couleur_yeux_id, style_vestimentaire_id)
-         select $1,
-                (select id from ref_genres where code = 'femme'),
-                (select id from ref_tranches_age_apparent where code = '25_34'),
-                (select id from ref_morphologies where code = 'elancee'),
-                (select id from ref_couleurs_cheveux where code = 'brun'),
-                'mi_longs',
-                (select id from ref_couleurs_yeux where code = 'vert'),
-                (select id from ref_styles_vestimentaires where code = 'decontracte')",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .expect("apparence");
+    use compagnon::db::personnages;
+    use compagnon::personnage::Cible;
 
-    poser_archetype(pool, id, "timide", "principal", None)
-        .await
-        .expect("principal");
-    poser_archetype(pool, id, "dominant", "secondaire", Some(1))
-        .await
-        .expect("secondaire 1");
-
-    sqlx::query(
-        "insert into personnage_tons (personnage_id, ton_id, role)
-         select $1, id, 'principal' from ref_tons where code = 'tendre'",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .expect("ton principal");
-
+    let mut choix: HashMap<String, String> = [
+        ("genre", "femme"),
+        ("age", "25_34"),
+        ("morphologie", "elancee"),
+        ("cheveux", "brun"),
+        ("longueur_cheveux", "mi_longs"),
+        ("yeux", "vert"),
+        ("style", "decontracte"),
+        ("archetype", "timide"),
+        ("archetype2", "dominant"),
+        ("ton", "tendre"),
+    ]
+    .iter()
+    .map(|(c, v)| ((*c).to_owned(), (*v).to_owned()))
+    .collect();
     for (code, valeur) in curseurs {
-        sqlx::query(
-            "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-             values ($1, $2, $3::numeric)",
-        )
-        .bind(id)
-        .bind(code)
-        .bind(valeur)
-        .execute(pool)
-        .await
-        .expect("curseur");
+        choix.insert((*code).to_owned(), (*valeur).to_owned());
     }
 
-    sqlx::query(
-        "insert into personnage_parametres_interaction (personnage_id, longueur_reponse)
-         values ($1, 'moyenne')",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .expect("interaction");
+    let mut tx = pool.begin().await.expect("transaction");
+    personnages::poser_apparence(&mut tx, id, &choix)
+        .await
+        .expect("apparence");
+    personnages::poser_traits(&mut tx, id, &choix, Cible::Archetypes)
+        .await
+        .expect("archétypes");
+    personnages::poser_traits(&mut tx, id, &choix, Cible::Tons)
+        .await
+        .expect("tons");
+    personnages::poser_curseurs(&mut tx, id, &choix)
+        .await
+        .expect("curseurs");
+    sqlx::query("insert into personnage_parametres_interaction (personnage_id) values ($1)")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .expect("interaction");
+    tx.commit().await.expect("commit");
 }
 
 #[tokio::test]

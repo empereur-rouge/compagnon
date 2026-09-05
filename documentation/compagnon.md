@@ -2,7 +2,7 @@
 tags: [feature]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.9.0
+version: v0.9.1
 ---
 
 # Le compagnon — catalogues, traits, prompt, modération
@@ -54,7 +54,8 @@ Trois conséquences pratiques :
 | `personnage` | `src/personnage/mod.rs` | traits, composition, validation, historique |
 | `personnage::regles` | `src/personnage/regles.rs` | les quatre règles que rien n'assouplit |
 | `personnage::moderation` | `src/personnage/moderation.rs` | examen du nom |
-| `cli_compagnon` | `src/cli_compagnon.rs` | création, affichage, vérification d'âge |
+| `db::personnages` | `src/db/personnages.rs` | **les écritures** d'un compagnon, partagées |
+| `cli_compagnon` | `src/cli_compagnon.rs` | les commandes, qui délèguent les écritures |
 | — | `migrations/0003_catalogues.sql` | douze tables de référence, peuplées |
 | — | `migrations/0004_compagnon.sql` | les tables `personnage_*`, le verrou, le triangle |
 | — | `migrations/0005_moderation.sql` | les termes qu'un nom ne peut pas contenir |
