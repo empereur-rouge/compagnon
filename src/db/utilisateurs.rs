@@ -90,3 +90,22 @@ pub async fn verifier_age(pool: &PgPool, id: i64, methode: &str) -> Result<(), E
     .await?;
     Ok(())
 }
+
+/// Le pays déclaré par l'utilisateur, s'il en a déclaré un.
+///
+/// Déclaratif et non déduit d'une géolocalisation : cela évite de construire un système de
+/// profilage de localisation, et c'est cohérent avec la vérification d'âge. C'est lui qui
+/// détermine les plafonds de juridiction.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si la lecture échoue.
+pub async fn pays_declare(pool: &PgPool, id: i64) -> Result<Option<String>, ErreurBase> {
+    Ok(
+        sqlx::query_scalar("select code_pays_declare from utilisateurs where id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
+}

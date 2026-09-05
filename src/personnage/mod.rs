@@ -54,8 +54,18 @@ pub struct Composition {
 pub struct Apparence {
     /// Genre.
     pub genre: String,
-    /// Tranche d'âge apparente — jamais sous 25 ans, la base l'interdit.
-    pub tranche_age: String,
+    /// Âge apparent **plancher**, en années.
+    ///
+    /// Un nombre et non le libellé de la tranche, et c'est une correction. Le libellé était ce
+    /// qui atteignait le modèle, et rien ne le contraignait : `check (age_min >= 25)` gardait
+    /// une colonne que la composition ne lisait pas. Une seule écriture —
+    /// `update ref_tranches_age_apparent set libelle = 'Adolescente de 16 ans'` — passait la
+    /// contrainte, passait les tests, passait la modération, et le prompt disait « Adolescente
+    /// de 16 ans ».
+    ///
+    /// Composer depuis le nombre fait descendre la garantie jusqu'à ce que le modèle lit.
+    /// `libelle` redevient ce qu'il aurait dû rester : un texte d'interface.
+    pub age_min: i16,
     /// Morphologie.
     pub morphologie: String,
     /// Couleur de cheveux, si choisie.
@@ -180,8 +190,8 @@ pub fn composer(traits: &Traits) -> Prompt {
     ));
     t.push_str("Apparence :\n");
     t.push_str(&format!(
-        "- {}, {}\n",
-        traits.apparence.genre, traits.apparence.tranche_age
+        "- {}, apparence d'au moins {} ans\n",
+        traits.apparence.genre, traits.apparence.age_min
     ));
     t.push_str(&format!("- silhouette {}\n", traits.apparence.morphologie));
     if let Some(couleur) = &traits.apparence.couleur_cheveux {
@@ -418,7 +428,7 @@ async fn charger_apparence(pool: &PgPool, personnage_id: Uuid) -> Result<Apparen
     // positionnel se serait décalé en silence le jour où une colonne s'insère au milieu.
     sqlx::query_as::<_, Apparence>(
         "select g.libelle    as genre,
-                t.libelle    as tranche_age,
+                t.age_min,
                 m.libelle    as morphologie,
                 ch.libelle   as couleur_cheveux,
                 a.longueur_cheveux,
@@ -444,16 +454,27 @@ async fn charger_curseurs(
     personnage_id: Uuid,
     code_pays: Option<&str>,
 ) -> Result<Vec<CurseurEffectif>, ErreurBase> {
+    // Deux corrections dans cette requête, et la seconde était un défaut réel.
+    //
     // Le plafond est appliqué **dans la requête** et non après coup : c'est la même discipline
     // que pour les signaux commerciaux de la phase 2.6 — une vérification qu'une évolution du
     // code applicatif ne peut pas contourner par distraction.
+    //
+    // Et la jointure porte désormais sur `plafonnable_juridiction`, non sur le domaine. Le
+    // filtre `domaine = 'personnalite'` servait de proxy à « ce curseur entre dans le prompt »,
+    // or le seul paramètre marqué plafonnable — `intensite_suggestive` — est de domaine
+    // `contenu` : les plafonds ne pouvaient s'appliquer qu'à des paramètres déclarés NON
+    // plafonnables, et jamais à celui pour lequel le mécanisme légal a été construit. Le
+    // drapeau, le commentaire du schéma et le code disaient trois choses différentes.
     let lignes: Vec<(String, String, Decimal, Option<Decimal>)> = sqlx::query_as(
         "select r.code, r.libelle, g.valeur, pl.valeur_max
            from personnage_parametres_gradues g
            join ref_parametres_gradues r on r.code = g.parametre_code
            left join ref_plafonds_juridiction pl
-                  on pl.parametre_code = g.parametre_code and pl.code_pays = $2
-          where g.personnage_id = $1 and r.actif and r.domaine = 'personnalite'
+                  on pl.parametre_code = g.parametre_code
+                 and pl.code_pays = $2
+                 and r.plafonnable_juridiction
+          where g.personnage_id = $1 and r.actif and r.entre_dans_le_prompt
           order by r.code",
     )
     .bind(personnage_id)
@@ -556,12 +577,105 @@ pub async fn valider(
     Ok(verdict)
 }
 
+/// Active un compagnon validé.
+///
+/// **Seul écrivain de `statut = 'actif'` dans tout le crate.** Il n'en existait aucun : la
+/// validation laissait le compagnon en `brouillon`, la ligne de commande annonçait
+/// « activable », et le seul chemin vers l'état actif était un `psql`. Le verrou construit pour
+/// protéger ce geste gardait donc une porte que le produit ne savait pas ouvrir.
+///
+/// L'activation reste **délibérée** et séparée de la validation : passer la modération autorise
+/// à parler, cela ne veut pas dire qu'on le veut tout de suite. Le déclencheur en base reste le
+/// filet — cette fonction ne le remplace pas, elle lui donne un appelant légitime.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si le prompt n'est pas validé : le déclencheur refuse, et le message
+/// de PostgreSQL nomme le compagnon.
+pub async fn activer(pool: &PgPool, personnage_id: Uuid) -> Result<(), ErreurBase> {
+    sqlx::query("update personnages set statut = 'actif' where id = $1 and supprime_le is null")
+        .bind(personnage_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Ce qu'une vérification d'intégrité a constaté.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Integrite {
+    /// Le prompt stocké correspond à son empreinte **et** à ce que les traits composent.
+    Intacte,
+    /// Le texte stocké ne correspond plus à son empreinte : la ligne a été altérée.
+    TexteAltere,
+    /// Le texte est intact, mais les traits ou le catalogue ont changé depuis la validation.
+    ///
+    /// C'est le cas utile — celui qu'aucune contrainte ne peut attraper, parce que le prompt
+    /// validé reste parfaitement valide en lui-même. Il ne décrit simplement plus le compagnon.
+    DeriveDepuisValidation,
+    /// Aucun prompt validé : il n'y a rien à vérifier.
+    PasDePromptValide,
+}
+
+/// Vérifie que le prompt validé dit encore ce qu'il disait.
+///
+/// # Pourquoi cette fonction devait exister
+///
+/// `prompt_systeme_hash` était écrit et **jamais relu**. Une empreinte que personne ne compare
+/// n'est pas une garantie ; et comparée à elle seule, elle n'aurait rien attrapé d'utile — elle
+/// vit dans la même ligne que le texte qu'elle atteste, donc la console qui modifie l'un modifie
+/// l'autre. C'est un contrôle de cohérence, pas un sceau.
+///
+/// La comparaison qui a de la valeur est la seconde : recomposer depuis les traits actuels et
+/// constater que le résultat diffère. Elle attrape ce qu'aucune contrainte ne peut voir — une
+/// description de catalogue modifiée, un trait changé, un plafond de juridiction posé après coup.
+///
+/// # Errors
+///
+/// [`ErreurBase`] si une lecture échoue.
+pub async fn verifier_integrite(
+    pool: &PgPool,
+    personnage_id: Uuid,
+    code_pays: Option<&str>,
+) -> Result<Integrite, ErreurBase> {
+    let stocke: Option<(String, String)> = sqlx::query_as(
+        "select prompt_systeme_genere, prompt_systeme_hash
+           from personnage_parametres_modele
+          where personnage_id = $1 and valide_le is not null",
+    )
+    .bind(personnage_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some((texte, empreinte)) = stocke else {
+        return Ok(Integrite::PasDePromptValide);
+    };
+
+    if format!("{:x}", Sha256::digest(texte.as_bytes())) != empreinte {
+        return Ok(Integrite::TexteAltere);
+    }
+
+    let recompose = composer(&charger(pool, personnage_id, code_pays).await?);
+    Ok(if recompose.empreinte == empreinte {
+        Integrite::Intacte
+    } else {
+        Integrite::DeriveDepuisValidation
+    })
+}
+
 /// Inscrit une version à l'historique, avec l'instantané complet du compagnon.
+///
+/// Publique parce que la création doit l'appeler : la spécification dit que toute écriture dans
+/// une table `personnage_*` s'accompagne d'une version, et la création n'en écrivait aucune —
+/// `'creation'` figurait dans la contrainte et n'était jamais produite.
+///
+/// # Errors
+///
+/// [`ErreurBase`] si l'écriture échoue.
 ///
 /// L'instantané est construit **par la base**, en une requête : le reconstituer en Rust
 /// demanderait de relire chaque table et de n'en oublier aucune — or c'est exactement ce qu'un
 /// historique existe pour rendre inutile.
-async fn inscrire_version(
+pub async fn inscrire_version(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     personnage_id: Uuid,
     raison: &str,
@@ -625,7 +739,7 @@ mod tests {
             nom: "Léa".to_owned(),
             apparence: Apparence {
                 genre: "Femme".to_owned(),
-                tranche_age: "25 à 34 ans".to_owned(),
+                age_min: 25,
                 morphologie: "Élancée".to_owned(),
                 couleur_cheveux: Some("Bruns".to_owned()),
                 longueur_cheveux: Some("mi_longs".to_owned()),

@@ -363,7 +363,7 @@ async fn compagnon_complet(pool: &PgPool, id: Uuid, curseurs: &[(&str, &str)]) {
 }
 
 #[tokio::test]
-async fn un_compagnon_en_base_compose_son_prompt_avec_fusion_et_plafond() {
+async fn un_compagnon_en_base_compose_son_prompt_avec_sa_fusion() {
     let (jetable, base) = deux_compagnons().await;
     compagnon_complet(
         base.pool(),
@@ -376,24 +376,11 @@ async fn un_compagnon_en_base_compose_son_prompt_avec_fusion_et_plafond() {
     )
     .await;
 
-    // Un plafond de juridiction sur l'affection, pour voir qu'il s'applique.
-    sqlx::query(
-        "insert into ref_plafonds_juridiction (code_pays, parametre_code, valeur_max, source_legale)
-         values ('XX', 'affection', 0.30, 'essai')",
-    )
-    .execute(base.pool())
-    .await
-    .expect("plafond");
-
-    let sans_plafond = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("FR"))
+    let traits = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("FR"))
         .await
         .expect("chargement");
-    let avec_plafond = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("XX"))
-        .await
-        .expect("chargement");
-
-    println!("=============== PROMPT, pays sans plafond ===============");
-    let prompt = compagnon::personnage::composer(&sans_plafond);
+    let prompt = compagnon::personnage::composer(&traits);
+    println!("=============== PROMPT COMPOSÉ ===============");
     println!("{}", prompt.texte);
 
     // La fusion timide + dominant est au catalogue : elle doit avoir été résolue à la lecture.
@@ -406,45 +393,95 @@ async fn un_compagnon_en_base_compose_son_prompt_avec_fusion_et_plafond() {
         "la fusion doit remplacer les descriptions simples"
     );
 
-    println!("=============== dosage, pays AVEC plafond ===============");
-    for curseur in &avec_plafond.curseurs {
-        println!(
-            "  {:12} effectif {} {}",
-            curseur.code,
-            curseur.valeur,
-            curseur
-                .avant_plafond
-                .map_or_else(String::new, |avant| format!("(choisi {avant}, plafonné)"))
-        );
+    // L'âge vient du NOMBRE contraint, jamais du libellé de la tranche. Le libellé était ce qui
+    // atteignait le modèle et rien ne le contraignait : une seule écriture suffisait à faire
+    // dire au prompt « Adolescente de 16 ans » avec `age_min` resté à 25.
+    println!(
+        "\nligne d'apparence : {}",
+        extraire_ligne(&prompt.texte, "apparence d'au moins")
+    );
+    assert!(
+        prompt.texte.contains("apparence d'au moins 25 ans"),
+        "l'âge doit venir de age_min, pas du libellé"
+    );
+
+    jetable.detruire().await;
+}
+
+#[tokio::test]
+async fn un_plafond_ne_s_applique_qu_aux_curseurs_declares_plafonnables() {
+    let (jetable, base) = deux_compagnons().await;
+    compagnon_complet(base.pool(), COMPAGNON_A, &[("affection", "0.90")]).await;
+
+    // C'est la règle que la version précédente de ce test avait à l'envers : elle posait le
+    // plafond sur `affection`, constatait qu'il s'appliquait, et prenait cela pour le
+    // comportement voulu. Or la jointure filtrait sur le DOMAINE et non sur le drapeau — donc
+    // les plafonds ne pouvaient s'appliquer qu'à des paramètres déclarés NON plafonnables, et
+    // jamais à celui pour lequel le mécanisme légal existe.
+    let plafonnables: Vec<(String, bool, bool)> = sqlx::query_as(
+        "select code, plafonnable_juridiction, entre_dans_le_prompt
+           from ref_parametres_gradues order by code",
+    )
+    .fetch_all(base.pool())
+    .await
+    .expect("catalogue");
+    println!("{:<22} plafonnable  dans le prompt", "curseur");
+    for (code, plafonnable, dans_le_prompt) in &plafonnables {
+        println!("{code:<22} {plafonnable:<12} {dans_le_prompt}");
     }
-    let affection = avec_plafond
+
+    // Un plafond posé sur un curseur NON plafonnable est ignoré — c'est le comportement voulu :
+    // le drapeau est la déclaration qu'une différence légale existe pour ce paramètre-là.
+    sqlx::query(
+        "insert into ref_plafonds_juridiction (code_pays, parametre_code, valeur_max, source_legale)
+         values ('XX', 'affection', 0.30, 'essai — affection n''est pas plafonnable')",
+    )
+    .execute(base.pool())
+    .await
+    .expect("plafond");
+
+    let traits = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("XX"))
+        .await
+        .expect("chargement");
+    let affection = traits
         .curseurs
         .iter()
         .find(|c| c.code == "affection")
-        .expect("le curseur est chargé");
+        .expect("curseur chargé");
+    println!(
+        "\naffection : choisie 0,90, plafond XX à 0,30 posé -> effective {}",
+        affection.valeur
+    );
     assert_eq!(
         affection.valeur,
-        rust_decimal::Decimal::new(30, 2),
-        "le plafond du pays doit abaisser la valeur effective"
+        rust_decimal::Decimal::new(90, 2),
+        "un plafond sur un curseur non plafonnable doit être ignoré"
     );
+
+    // Et quand le curseur EST déclaré plafonnable, le plafond mord.
+    sqlx::query(
+        "update ref_parametres_gradues set plafonnable_juridiction = true where code = 'affection'",
+    )
+    .execute(base.pool())
+    .await
+    .expect("drapeau");
+
+    let traits = compagnon::personnage::charger(base.pool(), COMPAGNON_A, Some("XX"))
+        .await
+        .expect("chargement");
+    let affection = traits
+        .curseurs
+        .iter()
+        .find(|c| c.code == "affection")
+        .expect("curseur chargé");
+    println!(
+        "affection, une fois déclarée plafonnable       -> effective {} (choisie {:?})",
+        affection.valeur, affection.avant_plafond
+    );
+    assert_eq!(affection.valeur, rust_decimal::Decimal::new(30, 2));
     assert_eq!(
         affection.avant_plafond,
         Some(rust_decimal::Decimal::new(90, 2))
-    );
-
-    // Et le prompt change en conséquence : le palier passe d'« énormément » à « peu ».
-    let prompt_plafonne = compagnon::personnage::composer(&avec_plafond);
-    println!(
-        "\naffection sans plafond : {}",
-        extraire_ligne(&prompt.texte, "affection")
-    );
-    println!(
-        "affection avec plafond : {}",
-        extraire_ligne(&prompt_plafonne.texte, "affection")
-    );
-    assert_ne!(
-        prompt.empreinte, prompt_plafonne.empreinte,
-        "un plafond qui change le palier doit changer le prompt, donc son empreinte"
     );
 
     jetable.detruire().await;

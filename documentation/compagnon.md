@@ -2,7 +2,7 @@
 tags: [feature]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.8.0
+version: v0.9.0
 ---
 
 # Le compagnon — catalogues, traits, prompt, modération
@@ -24,6 +24,21 @@ tout ce qu'il faudra lui donner.
 Ce n'est pas une préférence d'architecture, c'est ce qui rend la sûreté **structurelle** : si
 aucune valeur du catalogue n'évoque un mineur, aucune composition ne le peut. La modération
 porte sur l'ensemble des valeurs possibles, une fois, et non sur chaque compagnon créé.
+
+> **Cette phrase a été fausse pendant une version, et il vaut la peine de dire pourquoi.**
+>
+> Elle repose sur une prémisse qui n'était écrite nulle part : *les tables `ref_*` sont
+> immuables en production*. Rien ne la rendait vraie. Une seule écriture —
+> `update ref_tranches_age_apparent set libelle = 'Adolescente de 16 ans'` — passait la
+> contrainte `age_min >= 25`, passait les tests, passait la modération, et le prompt envoyé au
+> modèle disait « Femme, Adolescente de 16 ans ».
+>
+> Le motif était le même à cinq endroits : la garantie s'arrêtait au moment précis où elle
+> aurait dû porter sur du **texte** plutôt que sur une **forme**. `age_min` était contraint,
+> `libelle` non. Le nom était modéré, les descriptions non. Le verrou tenait la transition, pas
+> l'état. L'empreinte était calculée, jamais vérifiée.
+>
+> Voir « Ce que la base refuse » et `migrations/0006`.
 
 Trois conséquences pratiques :
 
@@ -53,6 +68,8 @@ Trois conséquences pratiques :
 | `personnage::valider` | `src/personnage/mod.rs` | compose, modère et inscrit, d'un seul tenant |
 | `moderation::examiner_nom` | `src/personnage/moderation.rs` | le seul texte libre à examiner |
 | `regles::bloc` | `src/personnage/regles.rs` | les quatre règles, écrites en dernier |
+| `personnage::activer` | `src/personnage/mod.rs` | **seul écrivain** de `statut = 'actif'` |
+| `personnage::verifier_integrite` | `src/personnage/mod.rs` | le prompt validé décrit-il encore ce compagnon ? |
 
 ## Ce que la base refuse
 
@@ -61,11 +78,38 @@ Six états impossibles, chacun éprouvé par un test qui constate le refus :
 | État | Mécanisme |
 |---|---|
 | une tranche d'âge sous 25 ans | `check (age_min >= 25)` |
-| un compagnon `actif` sans prompt validé | déclencheur `refuser_activation_sans_validation` |
+| **modifier un texte du catalogue hors migration** | `refuser_alteration_editoriale` |
+| un compagnon `actif` sans prompt validé | `refuser_activation_sans_validation` |
+| **un compagnon actif dont les traits ont changé** | `revoquer_la_validation` |
+| **un compagnon actif dont le nom a changé** | `revoquer_sur_changement_de_nom` |
+| **un compagnon actif dont on retire la validation** | `rabattre_si_validation_retiree` |
+| **un curseur de l'utilisateur posé sur un compagnon** | `refuser_curseur_de_l_utilisateur` |
 | deux archétypes principaux | index unique partiel |
 | un troisième secondaire | `check (rang in (1,2))` + index unique |
 | une conversation vers le compagnon d'un autre | clé étrangère **composite** |
 | un curseur hors `[0,1]` | `check (valeur between 0.00 and 1.00)` |
+
+### Le catalogue est immuable, sauf `actif`
+
+Les descriptions du catalogue sont injectées telles quelles dans le prompt. « Écrit et validé
+une fois » décrivait la relecture d'une migration, pas une propriété de la table.
+
+La difficulté était réelle : on ne peut pas simplement figer ces tables, parce que le produit
+**revendique** de pouvoir retirer une option à chaud — c'est l'argument de
+`ref_termes_interdits`, « un signalement arrive un dimanche soir ». La mutabilité voulue pour la
+liste noire était la faille de la liste blanche.
+
+Les deux régimes sont donc séparés dans la base et non dans l'intention : `actif` reste
+modifiable, le texte non. Le retrait rétroactif garde toute sa force ; l'altération silencieuse
+disparaît.
+
+### La validation est un état, plus un horodatage
+
+Toute modification d'un trait, du nom, ou de la validation elle-même **révoque** la validation et
+rabat le compagnon en `brouillon`. Le verrou ne gardait que l'instant de la transition : après
+validation, un compagnon pouvait rester actif en portant un prompt qui ne le décrivait plus, et
+un nom jamais modéré — c'était le second chemin par lequel du texte non modéré atteignait le
+modèle.
 
 Le **verrou d'activation** mérite d'être détaillé. La spécification le décrivait comme
 « vérifiable en base par une requête d'audit » — mais vérifiable n'est pas tenu. Une garantie
@@ -78,7 +122,8 @@ décidé. Une contrainte `check` ne peut pas lire une autre table ; un déclench
 Ordre de résolution, et il n'est pas indifférent — un modèle accorde plus de poids à ce qui
 vient en dernier :
 
-1. **identité** — nom et apparence, en libellés résolus depuis les catalogues ;
+1. **identité** — nom, et apparence. L'âge vient du **nombre** `age_min`, jamais du libellé de
+   la tranche : le libellé était ce qui atteignait le modèle, et rien ne le contraignait ;
 2. **personnalité** — fusions d'archétypes puis de tons ;
 3. **curseurs**, déjà plafonnés par la juridiction ;
 4. **registre** — longueur de réponse ;
@@ -150,6 +195,8 @@ compagnon catalogues                 # tout ce parmi quoi on peut choisir
 compagnon compagnon creer utilisateur=42 nom=Léa genre=femme age=25_34 \
                           morphologie=elancee archetype=timide ton=tendre
 compagnon compagnon montrer 42       # le prompt composé, avec son empreinte
+compagnon compagnon activer 42       # active, si la modération a validé
+compagnon compagnon verifier 42      # le prompt validé décrit-il encore ce compagnon ?
 compagnon utilisateur age 42         # vérification d'âge (support)
 ```
 
@@ -159,6 +206,18 @@ qu'on le voie jusqu'à la lecture du prompt.
 `compagnon utilisateur age` existe parce que la phase 1.1 exigeait une vérification d'âge sans
 donner aucun moyen de la poser — la seule façon était une écriture SQL directe. Le parcours
 d'inscription la remplacera pour l'utilisateur ; celle-ci reste pour le support.
+
+## Les plafonds de juridiction
+
+Un plafond ne s'applique qu'aux curseurs déclarés `plafonnable_juridiction`. La jointure filtrait
+auparavant sur le **domaine**, ce qui excluait exactement le seul paramètre plafonnable —
+`intensite_suggestive`, de domaine `contenu`. Les plafonds ne pouvaient donc s'appliquer qu'à des
+paramètres déclarés *non* plafonnables.
+
+Aujourd'hui aucun curseur n'est à la fois `plafonnable_juridiction` et `entre_dans_le_prompt` :
+c'est conforme à la spécification — seule l'intensité suggestive a une justification légale de
+varier par pays, et elle est portée par l'**utilisateur**, pour la phase 3. Le mécanisme est
+construit, éprouvé, et attend son premier usage.
 
 ## Ce qui manque encore
 
