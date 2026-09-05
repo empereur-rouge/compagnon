@@ -5,6 +5,33 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.5.0] - 2026-09-05
+
+Phase 1.2b — les tables du compagnon, et ce que la base refuse d'en faire.
+
+### Added
+
+- **feat(db)** : `personnage_apparence`, `personnage_archetypes`, `personnage_tons`,
+  `personnage_parametres_gradues`, `personnage_parametres_interaction`,
+  `personnage_parametres_modele`, `personnage_historique_versions`.
+- **feat(db)** : **le verrou d'activation**. La spécification disait « `valide_le` nul ⇒ le
+  compagnon ne peut pas passer en `actif`, vérifiable en base par une requête d'audit ».
+  Vérifiable n'est pas tenu : un déclencheur refuse désormais l'activation, quel que soit le
+  chemin d'écriture. C'est la dernière garantie avant qu'un compagnon ne se mette à parler, et
+  elle porte tout ce que la modération aura décidé.
+- **feat(db)** : un principal obligatoire et au plus deux secondaires, par index uniques
+  partiels ; plus une contrainte croisée `rôle`/`rang` — un principal rangé ou un secondaire
+  sans rang décriraient un état que la résolution du prompt ne saurait pas lire.
+
+### Fixed
+
+- **fix(db)** : **le triangle utilisateur / compagnon / conversation était ouvert.** Trois index
+  uniques garantissaient trois bornes indépendantes, mais les deux clés étrangères de
+  `conversations` étaient disjointes : une écriture directe pouvait relier l'utilisateur A au
+  compagnon de B. Sur un produit intime, c'est le chemin par lequel la mémoire de quelqu'un
+  atterrit chez un autre. Une clé étrangère composite rend la construction impossible au lieu de
+  la garder en trois endroits.
+
 ## [0.4.0] - 2026-09-05
 
 Phase 1.2 — les catalogues. Première des cinq tranches du schéma compagnon.
@@ -321,6 +348,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.5.0 | 2026-09-05 | 1.2b — tables du compagnon |
 | 0.4.0 | 2026-09-05 | 1.2a — catalogues |
 | 0.3.0 | 2026-09-05 | 1.1 — persistance |
 | 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
