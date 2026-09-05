@@ -78,6 +78,11 @@ pub struct Config {
     pub secret_webhook: String,
     /// Adresse sur laquelle le service écoute.
     pub adresse_ecoute: SocketAddr,
+    /// URL de connexion à PostgreSQL. **Secret** : elle porte un mot de passe.
+    ///
+    /// Le [`fmt::Debug`] n'en montre que ce qui sert au diagnostic — schéma, utilisateur,
+    /// hôte, port, base — et masque le mot de passe.
+    pub url_base: String,
     /// Racine de l'API Telegram, sans barre oblique finale.
     pub api_telegram: String,
 }
@@ -96,6 +101,7 @@ impl fmt::Debug for Config {
                 &format_args!("<masqué, {} caractères>", self.secret_webhook.len()),
             )
             .field("adresse_ecoute", &self.adresse_ecoute)
+            .field("url_base", &format_args!("{}", masquer_url(&self.url_base)))
             .field("api_telegram", &self.api_telegram)
             .finish()
     }
@@ -122,6 +128,9 @@ impl Config {
         let secret_webhook = lire("TELEGRAM_SECRET_WEBHOOK")?;
         valider_secret(&secret_webhook)?;
 
+        let url_base = lire("DATABASE_URL")?;
+        valider_url_base(&url_base)?;
+
         let adresse_brute = lire_ou("ADRESSE_ECOUTE", ADRESSE_ECOUTE_DEFAUT);
         let adresse_ecoute =
             adresse_brute
@@ -144,6 +153,7 @@ impl Config {
             jeton_bot,
             secret_webhook,
             adresse_ecoute,
+            url_base,
             api_telegram,
         })
     }
@@ -175,6 +185,44 @@ fn lire(nom: &'static str) -> Result<String, ErreurConfig> {
 /// silence le jour où l'une des deux aurait changé de politique sur les espaces.
 fn lire_ou(nom: &'static str, defaut: &str) -> String {
     lire(nom).unwrap_or_else(|_| defaut.to_owned())
+}
+
+/// Masque le mot de passe d'une URL de connexion, en gardant ce qui sert au diagnostic.
+///
+/// Une URL de base a la forme `schéma://utilisateur:motdepasse@hôte:port/base`. Savoir sur
+/// quel hôte et quelle base on est connecté est la première question d'un incident ; le mot
+/// de passe, lui, n'a rien à faire dans un journal. On ne masque donc que lui.
+///
+/// Si la forme n'est pas reconnue, tout est masqué : mieux vaut un journal muet qu'un journal
+/// qui divulgue une forme d'URL à laquelle on n'avait pas pensé.
+#[must_use]
+pub fn masquer_url(url: &str) -> String {
+    let Some((schema, reste)) = url.split_once("://") else {
+        return "<masqué, forme inattendue>".to_owned();
+    };
+    let Some((identifiants, hote)) = reste.split_once('@') else {
+        // Pas d'identifiants dans l'URL : il n'y a pas de mot de passe à masquer.
+        return url.to_owned();
+    };
+    let utilisateur = identifiants
+        .split_once(':')
+        .map_or(identifiants, |(u, _)| u);
+    format!("{schema}://{utilisateur}:<masqué>@{hote}")
+}
+
+/// Vérifie qu'une URL de connexion porte bien un schéma PostgreSQL.
+///
+/// Ne valide que le schéma : le reste est l'affaire de `sqlx`, dont l'erreur sera claire. Un
+/// schéma erroné, lui, produit un message obscur qu'il vaut mieux intercepter au démarrage.
+fn valider_url_base(brut: &str) -> Result<(), ErreurConfig> {
+    if brut.starts_with("postgres://") || brut.starts_with("postgresql://") {
+        return Ok(());
+    }
+    Err(ErreurConfig::Invalide {
+        variable: "DATABASE_URL",
+        // La raison ne reprend surtout pas la valeur : elle porte un mot de passe.
+        raison: "schéma attendu « postgres:// » ou « postgresql:// »".to_owned(),
+    })
 }
 
 /// Vérifie qu'un jeton a la forme `<chiffres>:<35 caractères>` de `@BotFather`.
@@ -252,20 +300,17 @@ mod tests {
     use super::*;
 
     /// Un jeton de la bonne forme, qui ne correspond à aucun bot réel.
-    const JETON_EXEMPLE: &str = "123456789:AAExempleDeJetonQuiNeSertAAbsolumen";
-    const SECRET_EXEMPLE: &str = "un-secret-de-quarante-huit-caracteres-exactement";
+    use crate::fixtures::{JETON as JETON_EXEMPLE, SECRET as SECRET_EXEMPLE};
 
     #[test]
     fn un_jeton_bien_forme_passe_et_livre_son_identifiant() {
         println!("jeton d'essai : {JETON_EXEMPLE}");
         println!("  partie secrète : {} caractères", JETON_EXEMPLE.len() - 10);
         valider_jeton_bot(JETON_EXEMPLE).expect("ce jeton doit être accepté");
-        let config = Config {
-            jeton_bot: JETON_EXEMPLE.to_owned(),
-            secret_webhook: SECRET_EXEMPLE.to_owned(),
-            adresse_ecoute: ADRESSE_ECOUTE_DEFAUT.parse().expect("adresse par défaut"),
-            api_telegram: API_TELEGRAM_DEFAUT.to_owned(),
-        };
+        let config = crate::fixtures::config_de_test(
+            API_TELEGRAM_DEFAUT,
+            "postgres://compagnon:motdepasse@localhost:5432/compagnon",
+        );
         println!("  identifiant extrait : {}", config.identifiant_bot());
         assert_eq!(config.identifiant_bot(), "123456789");
     }
@@ -319,12 +364,10 @@ mod tests {
 
     #[test]
     fn le_debug_de_la_config_ne_laisse_fuir_aucun_secret() {
-        let config = Config {
-            jeton_bot: JETON_EXEMPLE.to_owned(),
-            secret_webhook: SECRET_EXEMPLE.to_owned(),
-            adresse_ecoute: ADRESSE_ECOUTE_DEFAUT.parse().expect("adresse par défaut"),
-            api_telegram: API_TELEGRAM_DEFAUT.to_owned(),
-        };
+        let config = crate::fixtures::config_de_test(
+            API_TELEGRAM_DEFAUT,
+            "postgres://compagnon:motdepasse@localhost:5432/compagnon",
+        );
         let rendu = format!("{config:?}");
         println!("Debug rendu :\n  {rendu}");
 

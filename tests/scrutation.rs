@@ -18,8 +18,11 @@ use harnais::{FauxTelegram, update_privee};
 use tokio::sync::oneshot;
 
 /// Démarre la scrutation contre le faux Telegram, et rend de quoi l'arrêter.
-fn lancer(faux: &FauxTelegram) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
-    let config = faux.config();
+async fn lancer(
+    faux: &FauxTelegram,
+    base: &harnais::base::BaseDeTest,
+) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    let config = faux.config(&base.url);
     let (arret, reception) = oneshot::channel();
     let tache = tokio::spawn(async move {
         app::scruter(&config, async move {
@@ -37,7 +40,9 @@ async fn un_message_scrute_ressort_par_la_meme_porte_qu_un_message_webhook() {
     faux.livrer(vec![update_privee(970_001, "salut par scrutation")])
         .await;
 
-    let (arret, tache) = lancer(&faux);
+    let base = harnais::base::BaseDeTest::creer().await;
+    base.verifier_age(42).await;
+    let (arret, tache) = lancer(&faux, &base).await;
 
     // La réponse doit partir exactement comme si le message était entré par le webhook.
     let messages = faux.attendre("sendMessage", 1).await;
@@ -62,6 +67,7 @@ async fn un_message_scrute_ressort_par_la_meme_porte_qu_un_message_webhook() {
 
     let _ = arret.send(());
     tache.await.expect("arrêt propre");
+    base.detruire().await;
 }
 
 #[tokio::test]
@@ -69,13 +75,19 @@ async fn le_webhook_est_retire_avant_toute_scrutation() {
     let faux = FauxTelegram::demarrer().await;
     faux.livrer(vec![]).await;
 
-    let (arret, tache) = lancer(&faux);
+    let base = harnais::base::BaseDeTest::creer().await;
+    let (arret, tache) = lancer(&faux, &base).await;
 
     // Telegram interdit de mêler les deux modes : sans ce retrait, chaque `getUpdates`
     // répondrait 409 et la scrutation ne recevrait jamais rien.
     let retraits = faux.attendre("deleteWebhook", 1).await;
     println!("deleteWebhook appelé {} fois", retraits.len());
 
+    // Attendre la première scrutation AVANT de lire l'ordre. Sans cette attente le test est
+    // une course : entre `deleteWebhook` et le premier `getUpdates`, le service joint la base
+    // et applique ses migrations. Le test passait jusqu'ici parce que l'intervalle était de
+    // quelques microsecondes — il ne prouvait rien, il gagnait.
+    faux.attendre("getUpdates", 1).await;
     let ordre = faux.ordre_des_appels().await;
     println!("ordre des appels : {:?}", &ordre[..ordre.len().min(4)]);
 
@@ -95,6 +107,7 @@ async fn le_webhook_est_retire_avant_toute_scrutation() {
 
     let _ = arret.send(());
     tache.await.expect("arrêt propre");
+    base.detruire().await;
 }
 
 #[tokio::test]
@@ -109,7 +122,9 @@ async fn l_offset_avance_pour_accuser_ce_qui_a_ete_pris() {
     ])
     .await;
 
-    let (arret, tache) = lancer(&faux);
+    let base = harnais::base::BaseDeTest::creer().await;
+    base.verifier_age(42).await;
+    let (arret, tache) = lancer(&faux, &base).await;
 
     // Les trois doivent ressortir, dans l'ordre.
     let messages = faux.attendre("sendMessage", 3).await;
@@ -145,6 +160,7 @@ async fn l_offset_avance_pour_accuser_ce_qui_a_ete_pris() {
 
     let _ = arret.send(());
     tache.await.expect("arrêt propre");
+    base.detruire().await;
 }
 
 #[tokio::test]
@@ -165,7 +181,8 @@ async fn une_mise_a_jour_ecartee_avance_quand_meme_l_offset() {
     });
     faux.livrer(vec![groupe]).await;
 
-    let (arret, tache) = lancer(&faux);
+    let base = harnais::base::BaseDeTest::creer().await;
+    let (arret, tache) = lancer(&faux, &base).await;
 
     // Attendre que l'offset ait dépassé la mise à jour écartée.
     let limite = std::time::Instant::now() + Duration::from_secs(5);
@@ -198,4 +215,5 @@ async fn une_mise_a_jour_ecartee_avance_quand_meme_l_offset() {
 
     let _ = arret.send(());
     tache.await.expect("arrêt propre");
+    base.detruire().await;
 }

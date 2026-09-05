@@ -37,6 +37,7 @@
 //! | [`error`] | codes d'erreur numériques stables de la surface HTTP |
 //! | [`horloge`] | temps, en un seul endroit, pour que les tests puissent le figer |
 //! | [`admission`] | ce qu'on retient d'une mise à jour, quelle que soit la porte |
+//! | [`db`] | PostgreSQL : connexion, migrations, file à bail |
 //! | [`http`] | routeur, état partagé, sonde de santé |
 //! | [`scrutation`] | réception sans domaine ni TLS, pour éprouver le bot en vrai |
 //! | [`telegram`] | client de l'API Bot : authentification, envoi, découpage |
@@ -47,7 +48,10 @@ pub mod admission;
 pub mod app;
 pub mod cli;
 pub mod config;
+pub mod db;
 pub mod error;
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixtures;
 pub mod horloge;
 pub mod http;
 pub mod scrutation;

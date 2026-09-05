@@ -27,6 +27,9 @@ use std::time::Duration;
 
 use compagnon::app::{self, Prepare};
 use compagnon::config::Config;
+pub mod base;
+
+use base::BaseDeTest;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -34,10 +37,10 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// Le jeton employé par les tests. De la bonne forme, sans correspondance réelle.
-pub const JETON: &str = "123456789:AAExempleDeJetonQuiNeSertAAbsolumen";
+pub use compagnon::fixtures::JETON;
 
 /// Le secret de webhook employé par les tests.
-pub const SECRET: &str = "un-secret-de-quarante-huit-caracteres-exactement";
+pub use compagnon::fixtures::SECRET;
 
 /// Au-delà, un appel attendu est considéré comme n'étant jamais venu.
 ///
@@ -103,13 +106,36 @@ impl FauxTelegram {
     /// La configuration qui pointe le service vers ce faux Telegram.
     ///
     /// `adresse_ecoute` est sur le port zéro : l'adresse réelle n'est connue qu'après liaison.
-    pub fn config(&self) -> Config {
-        Config {
-            jeton_bot: JETON.to_owned(),
-            secret_webhook: SECRET.to_owned(),
-            adresse_ecoute: "127.0.0.1:0".parse().expect("adresse littérale"),
-            api_telegram: self.serveur.uri(),
-        }
+    pub fn config(&self, url_base: &str) -> Config {
+        compagnon::fixtures::config_de_test(&self.serveur.uri(), url_base)
+    }
+
+    /// Fait échouer `sendMessage` avec un `500`, que Telegram traite comme transitoire.
+    ///
+    /// Monté en priorité haute, il masque le montage nominal tant qu'il est en place.
+    pub async fn casser_l_envoi(&self) {
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{JETON}/sendMessage")))
+            .respond_with(ResponseTemplate::new(500).set_body_json(
+                json!({"ok": false, "error_code": 500, "description": "Internal Server Error"}),
+            ))
+            .with_priority(1)
+            .mount(&self.serveur)
+            .await;
+    }
+
+    /// Ralentit `sendMessage`, pour observer ce qui se passe pendant qu'une tâche est en vol.
+    pub async fn ralentir_l_envoi(&self, duree: Duration) {
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{JETON}/sendMessage")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"ok": true, "result": {"message_id": 1}}))
+                    .set_delay(duree),
+            )
+            .with_priority(1)
+            .mount(&self.serveur)
+            .await;
     }
 
     /// Fait livrer un lot de mises à jour à la première scrutation, puis plus rien.
@@ -228,6 +254,8 @@ impl FauxTelegram {
 
 /// Un service en marche, joignable, qu'on peut éteindre proprement.
 pub struct EnMarche {
+    /// La base jetable de ce test, détruite par [`EnMarche::eteindre`].
+    base: BaseDeTest,
     /// L'adresse réellement obtenue.
     pub adresse: std::net::SocketAddr,
     client: reqwest::Client,
@@ -237,7 +265,23 @@ pub struct EnMarche {
 
 /// Démarre le service contre un faux Telegram, et rend de quoi lui parler.
 pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
-    let config = faux.config();
+    // Une base neuve par test : le service y appliquera lui-même ses migrations, exactement
+    // comme en production. Le test n'a donc pas à connaître le schéma.
+    let base = BaseDeTest::creer().await;
+    lancer_sur(faux, base).await
+}
+
+/// Démarre un service sur une base **existante**, avec ce qu'elle contient déjà.
+///
+/// Sert à éprouver ce qu'un redémarrage reprend : c'est la promesse centrale de la file en
+/// base, et elle ne se vérifie qu'en faisant repartir un second service sur les restes du
+/// premier.
+pub async fn reprendre(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
+    lancer_sur(faux, base).await
+}
+
+async fn lancer_sur(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
+    let config = faux.config(&base.url);
     let prepare: Prepare = app::preparer(&config)
         .await
         .expect("le service doit démarrer contre le faux Telegram");
@@ -264,6 +308,7 @@ pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
     attendre_ecoute(&client, adresse_servie).await;
 
     EnMarche {
+        base,
         adresse: adresse_servie,
         client,
         arret,
@@ -417,10 +462,36 @@ impl EnMarche {
     /// erreur de compilation plutôt qu'un no-op silencieux, et cela supprime les deux `Option`
     /// dont le seul rôle était de rendre le vidage réentrant.
     pub async fn eteindre(self) {
+        self.arreter().await.detruire().await;
+    }
+
+    /// Éteint le service et **rend la base**, sans la détruire.
+    ///
+    /// Pour les tests qui doivent constater ce que l'arrêt a laissé derrière lui — une tâche
+    /// non traitée, par exemple. L'appelant doit appeler `detruire` ensuite.
+    pub async fn arreter(self) -> BaseDeTest {
         let _ = self.arret.send(());
         self.tache
             .await
             .expect("le service doit s'éteindre proprement");
+        // La base est rendue APRÈS l'extinction : le pool du service tient encore des
+        // connexions tant qu'il n'a pas rendu la main.
+        self.base
+    }
+
+    /// La base de ce test, pour poser une condition ou constater un état.
+    #[must_use]
+    pub const fn base(&self) -> &BaseDeTest {
+        &self.base
+    }
+
+    /// L'URL de la base de ce test, pour l'inspecter directement.
+    ///
+    /// Sert aux tests qui doivent constater un état que le service ne rend pas par HTTP — une
+    /// tâche restée en file après un arrêt, par exemple.
+    #[must_use]
+    pub fn url_base(&self) -> &str {
+        &self.base.url
     }
 }
 

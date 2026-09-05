@@ -1,6 +1,6 @@
 [package]
 name = "compagnon"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Plateforme de personnages conversationnels sur Telegram"
@@ -16,13 +16,41 @@ dotenvy = "0.15.7"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "charset", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# PostgreSQL. Trois choix explicites dans cette liste de features :
+#
+# « tls-rustls-aws-lc-rs » et non natif : la base peut être ailleurs que sur la machine du
+# service, et le projet n'embarque qu'une seule pile cryptographique — la même que reqwest.
+#
+# « uuid » et « chrono » : le schéma repose sur `uuid` et `timestamptz`, et les décoder à la
+# main depuis des chaînes annulerait ce que les types de la base garantissent.
+#
+# « macros » est nécessaire pour `sqlx::migrate!`, qui embarque les migrations dans le binaire
+# en lisant le dossier à la compilation. Ce n'est PAS la vérification de requêtes à la
+# compilation : celle-ci ne s'active qu'en écrivant `query!` plutôt que `query`, et c'est elle
+# qui exigerait une base vivante ou un cache `.sqlx` commité — donc qui casserait la
+# construction de l'image Docker. Ce projet écrit donc `sqlx::query` partout, et reporte la
+# vérification sur des tests qui tournent contre un vrai PostgreSQL.
+sqlx = { version = "0.8.6", default-features = false, features = [
+    "runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "migrate", "macros", "uuid", "chrono",
+] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4.42", default-features = false, features = ["std", "serde"] }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tower-http = { version = "0.7.0", features = ["trace", "timeout", "limit", "catch-panic"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
+[features]
+# Expose `compagnon::fixtures` aux tests d'intégration, qui vivent dans une autre cible de
+# compilation que `src/` et ne peuvent donc pas atteindre un module `#[cfg(test)]`. Absente
+# du binaire livré.
+fixtures = []
+
 [dev-dependencies]
+# Dépendance de la caisse sur elle-même : le seul moyen d'activer une caractéristique
+# uniquement pour les tests d'intégration. Motif courant, et sans effet sur le binaire.
+compagnon = { path = ".", features = ["fixtures"] }
 # wiremock : l'API Telegram simulée à la frontière HTTP sortante. C'est le seul élément
 # simulé du harnais — le routeur, le webhook et le client sont les vrais.
 wiremock = "0.6.5"

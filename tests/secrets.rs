@@ -18,10 +18,9 @@
 
 mod harnais;
 
-use compagnon::config::Config;
 use compagnon::error::{ApiError, ErrorCode};
 use compagnon::telegram::Canal;
-use harnais::{FauxTelegram, JETON, SECRET, update_privee};
+use harnais::{FauxTelegram, SECRET, update_privee};
 
 /// La partie du jeton qui ne doit jamais apparaître nulle part.
 const PARTIE_SECRETE: &str = "AAExempleDeJetonQuiNeSertAAbsolumen";
@@ -31,12 +30,11 @@ async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
     // Le vrai chemin, pas un mock : le port 9 (discard) est fermé, `reqwest` produit donc une
     // vraie erreur de connexion — celle qui, avant correction, imprimait
     // « error sending request for url (http://.../bot<JETON>/getMe) ».
-    let config = Config {
-        jeton_bot: JETON.to_owned(),
-        secret_webhook: SECRET.to_owned(),
-        adresse_ecoute: "127.0.0.1:0".parse().expect("adresse littérale"),
-        api_telegram: "http://127.0.0.1:9".to_owned(),
-    };
+    let config = compagnon::fixtures::config_de_test(
+        // Port 9 (discard), fermé : provoque une vraie erreur de connexion `reqwest`.
+        "http://127.0.0.1:9",
+        "postgres://compagnon:motdepasse@localhost:5432/compagnon",
+    );
     let canal = Canal::new(&config).expect("le client doit se construire");
     let erreur = canal
         .identite()
@@ -67,12 +65,11 @@ async fn la_chaine_de_diagnostic_d_une_erreur_api_ne_traverse_pas_vers_une_url()
     // `ApiError::diagnostic` parcourt toute la chaîne de `source()` et appelle `to_string()`
     // sur chaque maillon. Si une erreur d'envoi était attachée comme cause, l'URL ressortirait
     // par ce chemin-là même si le `Display` de premier niveau était propre.
-    let config = Config {
-        jeton_bot: JETON.to_owned(),
-        secret_webhook: SECRET.to_owned(),
-        adresse_ecoute: "127.0.0.1:0".parse().expect("adresse littérale"),
-        api_telegram: "http://127.0.0.1:9".to_owned(),
-    };
+    let config = compagnon::fixtures::config_de_test(
+        // Port 9 (discard), fermé : provoque une vraie erreur de connexion `reqwest`.
+        "http://127.0.0.1:9",
+        "postgres://compagnon:motdepasse@localhost:5432/compagnon",
+    );
     let canal = Canal::new(&config).expect("le client doit se construire");
     let source = canal.identite().await.expect_err("le port 9 est fermé");
 

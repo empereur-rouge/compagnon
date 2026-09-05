@@ -5,6 +5,39 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.3.0] - 2026-09-05
+
+Phase 1.1 — la persistance. Livrée en deux temps : la couche base, puis la bascule.
+
+### Added
+
+- **feat(db)** : PostgreSQL, avec `sqlx` et des migrations versionnées embarquées dans le
+  binaire. Le conteneur livré ne contient pas l'arbre source ; lire les migrations sur disque
+  aurait produit un service tournant sur un schéma incomplet plutôt qu'un refus franc.
+- **feat(db)** : schéma du noyau — `utilisateurs`, `personnages`, `conversations`, `messages`,
+  `historique_consentement`, `file_messages`. La cardinalité **un utilisateur → un compagnon →
+  une conversation** est tenue par des index uniques partiels, pas par une règle applicative.
+- **feat(db)** : file de traitement **à bail**. Un état « en cours » nu ne survit pas à la mort
+  du worker qui l'a posé : la tâche reste prise par personne et rien ne la reprend. Le bail est
+  une échéance, et la requête de prise inclut les baux expirés dans ses candidats — aucun
+  nettoyage périodique n'est nécessaire.
+- **feat(config)** : `DATABASE_URL`, traitée comme un secret. Le `Debug` ne montre que schéma,
+  utilisateur, hôte et base — savoir où l'on est connecté est la première question d'un
+  incident, le mot de passe n'a rien à y faire.
+- **test** : `tests/harnais/base.rs` — une base PostgreSQL **neuve par test**, migrée par le
+  code de production puis détruite. Ni transaction annulée (le service ouvre son propre pool et
+  ne verrait rien) ni schéma partagé (les migrations se poseraient au mauvais endroit).
+- **outil** : `scripts/base-de-test.sh` démarre le PostgreSQL de test sur le port 5433 — jamais
+  5432, pour qu'une base de développement installée sur la machine ne soit pas atteinte par une
+  suite qui crée et détruit des bases.
+
+### Changed
+
+- **change(test)** : les valeurs d'exemple et la construction de `Config` vivent dans
+  `compagnon::fixtures`, derrière la caractéristique `fixtures`. Elles étaient recopiées dans
+  six fichiers sur deux cibles de compilation — une revue l'avait signalé, et l'ajout d'un seul
+  champ à `Config` a cassé les six le jour même.
+
 ## [0.2.2] - 2026-09-05
 
 ### Infrastructure
@@ -181,6 +214,7 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.3.0 | 2026-09-05 | 1.1 — persistance |
 | 0.2.2 | 2026-09-05 | 0 — modèle produit consigné |
 | 0.2.1 | 2026-09-05 | 0 — décision « un seul bot » consignée |
 | 0.2.0 | 2026-09-05 | 0 — réception par scrutation |
