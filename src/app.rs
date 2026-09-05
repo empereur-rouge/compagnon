@@ -33,6 +33,7 @@ use tokio::task::JoinHandle;
 use crate::config::Config;
 use crate::horloge;
 use crate::http::{self, EtatApp};
+use crate::scrutation;
 use crate::telegram::envoi::ErreurEnvoi;
 use crate::telegram::{Canal, ErreurCanal};
 use crate::worker::{self, CAPACITE_FILE};
@@ -190,6 +191,60 @@ pub async fn servir(
     arret: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ErreurDemarrage> {
     preparer(config).await?.servir(arret).await
+}
+
+/// Écoute Telegram par scrutation, sans servir de webhook.
+///
+/// # Ce que cette fonction change, et ce qu'elle ne change pas
+///
+/// Elle change la **porte d'entrée**, et rien d'autre : pas de socket d'écoute, pas de
+/// routeur, pas de TLS, donc rien à exposer sur Internet. Tout ce qui suit — l'admission, la
+/// file, le worker, l'extinction — est le code de production, appelé tel quel. C'est la
+/// condition pour qu'un comportement observé ici veuille dire quelque chose.
+///
+/// Le webhook est **retiré** au démarrage : Telegram interdit de mêler les deux modes et
+/// répondrait `409` à chaque appel. Le retrait est donc un geste délibéré et journalisé, pas
+/// un effet de bord — un développeur qui scrute sur le jeton de production coupe sa
+/// production, et doit le lire dans les journaux plutôt que le découvrir.
+///
+/// # Errors
+///
+/// Renvoie [`ErreurDemarrage`] si le canal ne se construit pas ou si Telegram refuse le jeton.
+pub async fn scruter(
+    config: &Config,
+    arret: impl Future<Output = ()> + Send,
+) -> Result<(), ErreurDemarrage> {
+    let canal = Canal::new(config)?;
+
+    let identite = canal.identite().await?;
+    let nom = identite
+        .username
+        .map_or_else(|| identite.first_name.clone(), |u| format!("@{u}"));
+    tracing::info!(bot_id = identite.id, bot = %nom, "jeton validé par Telegram");
+
+    // Sans ce retrait, tous les appels suivants échoueraient en `409`, et le message de
+    // Telegram ne nommerait pas la cause.
+    canal.retirer_webhook().await?;
+    tracing::info!("webhook retiré : la scrutation et le webhook s'excluent");
+
+    let (expediteur, reception) = mpsc::channel(CAPACITE_FILE);
+    let canal = Arc::new(canal);
+    let worker = tokio::spawn(worker::tourner(reception, Arc::clone(&canal)));
+
+    scrutation::tourner(&canal, expediteur, arret).await;
+
+    // Même contrat d'extinction que le service webhook : l'expéditeur est relâché à la sortie
+    // de `tourner`, la file se referme, le worker la vide — sous la même borne.
+    tracing::info!(delai_max = ?DELAI_VIDAGE, "vidage de la file");
+    match tokio::time::timeout(DELAI_VIDAGE, worker).await {
+        Ok(Ok(())) => tracing::info!("file vidée, arrêt propre"),
+        Ok(Err(erreur)) => tracing::error!(%erreur, "le worker s'est interrompu anormalement"),
+        Err(_) => tracing::error!(
+            delai = ?DELAI_VIDAGE,
+            "vidage interrompu : des messages acceptés n'ont pas été traités"
+        ),
+    }
+    Ok(())
 }
 
 /// Se réalise au premier `SIGINT` ou `SIGTERM`.

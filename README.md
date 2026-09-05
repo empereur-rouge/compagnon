@@ -9,26 +9,34 @@ service authentifie, extrait, met en file, répond en écho. Pas de base, pas de
 personnage — c'est délibéré : le transport est prouvé avant qu'une décision produit ne repose
 dessus.
 
-## Démarrer
+## Éprouver le bot en cinq minutes, sans rien déployer
+
+Le webhook exige un domaine, un certificat valide et une machine joignable. Rien de tout cela
+n'est nécessaire pour parler à son bot :
 
 ```bash
-cp .env.example .env          # jeton @BotFather, secret de webhook, domaine
+cp .env.example .env          # y coller le jeton donné par @BotFather
+cargo run -- ecouter          # puis écrire au bot depuis Telegram
+```
+
+`ecouter` reçoit par **scrutation** (`getUpdates`) au lieu d'attendre un appel entrant : ni
+domaine, ni TLS, ni tunnel, ni compte tiers. Ce n'est pas un raccourci de test — les messages
+traversent la même admission, la même file et le même worker que la production. Seule la porte
+d'entrée change.
+
+## Mettre en service
+
+```bash
+cp .env.example .env          # jeton, secret de webhook, domaine, courriel ACME
 docker compose up --detach --build
 docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
 docker compose exec bot compagnon sonde
 ```
 
-En développement, sans Docker :
-
-```bash
-cargo run                     # lit .env, sert sur ADRESSE_ECOUTE
-cargo run -- sonde
-```
-
 ## Vérifier
 
 ```bash
-cargo test --release -- --nocapture   # 25 unitaires + 12 de bout en bout + 1 doctest
+cargo test --release -- --nocapture   # 25 unitaires + 16 de bout en bout + 1 doctest
 cargo clippy --all-targets            # zéro avertissement attendu
 cargo doc --no-deps --open            # zéro avertissement attendu
 ```
@@ -42,6 +50,7 @@ phases suivantes s'y greffent : c'est lui qu'on étend, pas qu'on contourne.
 
 ```
 compagnon                          sert le webhook et fait tourner le worker
+compagnon ecouter                  reçoit par scrutation — ni domaine, ni TLS, ni tunnel
 compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
 compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
 compagnon webhook retirer          retire le webhook
@@ -58,6 +67,7 @@ compagnon webhook retirer          retire le webhook
 | ✅ | codes d'erreur numériques stables, honorés jusque sur une panique de gestionnaire |
 | ✅ | les deux secrets bannis des journaux, du proxy, et **du type des erreurs** |
 | ✅ | authentification du webhook **avant** que le corps ne soit lu |
+| ✅ | réception par scrutation, pour éprouver le bot depuis un poste de travail |
 | ⬜ | base, personnages, moteur de dialogue — phase 1 |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |

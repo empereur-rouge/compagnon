@@ -28,6 +28,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{ApiError, ErrorCode};
 use envoi::{Action, ErreurEnvoi, Identite, MessageEnvoye, Panne, Reponse};
+use types::Update;
 
 /// En-tête par lequel Telegram présente le secret partagé.
 const ENTETE_SECRET: &str = "x-telegram-bot-api-secret-token";
@@ -40,6 +41,9 @@ const DELAI_APPEL: Duration = Duration::from_secs(15);
 
 /// Délai d'établissement de la connexion.
 const DELAI_CONNEXION: Duration = Duration::from_secs(5);
+
+/// Marge accordée au client au-delà de la patience annoncée à Telegram, en scrutation.
+const MARGE_SCRUTATION: Duration = Duration::from_secs(10);
 
 /// Ce qui a empêché la construction du canal.
 #[derive(Debug, thiserror::Error)]
@@ -192,6 +196,40 @@ impl Canal {
         Ok(())
     }
 
+    /// Réclame les mises à jour en attente, en tenant la connexion ouverte.
+    ///
+    /// C'est l'autre façon de recevoir, celle qui n'exige ni domaine, ni certificat, ni
+    /// adresse publique — donc la seule utilisable depuis un poste de travail. Telegram
+    /// **interdit** de mêler les deux : tant qu'un webhook est déclaré, `getUpdates` répond
+    /// `409`. [`Self::retirer_webhook`] est donc appelé avant d'entrer en scrutation.
+    ///
+    /// `offset` est l'identifiant de la première mise à jour souhaitée. Le lui redonner est
+    /// aussi ce qui **accuse** les précédentes : Telegram les oublie alors, et ne les
+    /// redonnera plus. Un `offset` qui n'avance pas rejoue donc le même lot indéfiniment.
+    ///
+    /// # Errors
+    ///
+    /// Renvoie [`ErreurEnvoi`] si l'appel échoue. Le cas le plus parlant est un `409`, qui
+    /// signifie qu'un webhook est encore déclaré — ou qu'une autre instance scrute déjà avec
+    /// le même jeton.
+    pub async fn recevoir_mises_a_jour(
+        &self,
+        offset: i64,
+        patience: Duration,
+    ) -> Result<Vec<Update>, ErreurEnvoi> {
+        let corps = CorpsMisesAJour {
+            offset,
+            timeout: patience.as_secs(),
+            allowed_updates: &["message"],
+        };
+        // Marge au-delà de la patience annoncée : c'est Telegram qui doit clore l'attente en
+        // rendant une liste vide, pas le client en tranchant la connexion. Sans marge, les
+        // deux échéances courent ensemble et la course se solde par un faux échec réseau.
+        let delai = patience + MARGE_SCRUTATION;
+        self.appeler_en("getUpdates", Some(&corps), Some(delai))
+            .await
+    }
+
     /// Le corps commun de tout appel à l'API Bot.
     ///
     /// Aucune des erreurs construites ici ne porte l'URL — seulement `methode`. C'est la règle
@@ -206,8 +244,31 @@ impl Canal {
         R: serde::de::DeserializeOwned,
         C: Serialize + ?Sized,
     {
+        self.appeler_en(methode, corps, None).await
+    }
+
+    /// Comme [`Self::appeler`], avec un délai propre à cet appel.
+    ///
+    /// Existe pour `getUpdates` seul : une scrutation longue tient délibérément la connexion
+    /// ouverte plusieurs dizaines de secondes, très au-delà du [`DELAI_APPEL`] qui convient à
+    /// tout le reste. Sans cette dérogation, le client trancherait sa propre attente et la
+    /// scrutation dégénérerait en sondage serré — le contraire de ce qu'elle est.
+    async fn appeler_en<R, C>(
+        &self,
+        methode: &'static str,
+        corps: Option<&C>,
+        delai: Option<Duration>,
+    ) -> Result<R, ErreurEnvoi>
+    where
+        R: serde::de::DeserializeOwned,
+        C: Serialize + ?Sized,
+    {
         let url = format!("{}/{methode}", self.racine);
         let requete = self.client.post(&url);
+        let requete = match delai {
+            Some(delai) => requete.timeout(delai),
+            None => requete,
+        };
         let requete = match corps {
             Some(c) => requete.json(c),
             None => requete,
@@ -248,6 +309,14 @@ struct CorpsMessage<'a> {
 struct CorpsAction {
     chat_id: i64,
     action: Action,
+}
+
+/// Le corps d'un `getUpdates`.
+#[derive(Debug, Serialize)]
+struct CorpsMisesAJour<'a> {
+    offset: i64,
+    timeout: u64,
+    allowed_updates: &'a [&'a str],
 }
 
 /// Le corps d'un `setWebhook`.

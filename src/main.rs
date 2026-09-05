@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! compagnon                          sert le webhook et fait tourner le worker
+//! compagnon ecouter                  reçoit par scrutation, sans domaine ni TLS
 //! compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
 //! compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
 //! compagnon webhook retirer          retire le webhook
@@ -26,6 +27,8 @@ const USAGE: &str = "\
 compagnon — plateforme de personnages conversationnels sur Telegram
 
   compagnon                          sert le webhook et fait tourner le worker
+  compagnon ecouter                  reçoit par scrutation — ni domaine, ni TLS, ni tunnel ;
+                                     pour éprouver le bot depuis un poste de travail
   compagnon sonde                    interroge /health, sort en 0 ou 1
   compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
   compagnon webhook retirer          retire le webhook
@@ -54,6 +57,10 @@ async fn main() {
         }
         // Les commandes d'exploitation journalisent vers l'erreur standard : leur sortie
         // standard porte un résultat qu'on redirige souvent vers `jq`.
+        ["ecouter"] => {
+            telemetry::init();
+            ecouter().await;
+        }
         ["sonde"] => {
             telemetry::init_vers_stderr();
             rendre_compte(cli::sonde(&config_ou_sortir()).await);
@@ -95,6 +102,18 @@ fn rendre_compte(resultat: Result<(), cli::ErreurCli>) {
         tracing::error!(%erreur, "commande échouée");
         std::process::exit(SORTIE_ERREUR);
     }
+}
+
+/// Écoute par scrutation, et sort en erreur si le démarrage échoue.
+async fn ecouter() {
+    let config = config_ou_sortir();
+    tracing::info!(config = ?config, "configuration chargée");
+
+    if let Err(erreur) = app::scruter(&config, app::signal_d_arret()).await {
+        tracing::error!(%erreur, "la scrutation s'est arrêtée sur une erreur");
+        std::process::exit(SORTIE_ERREUR);
+    }
+    tracing::info!("arrêt terminé");
 }
 
 /// Sert, et sort en erreur si le démarrage échoue.
