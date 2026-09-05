@@ -27,9 +27,11 @@
 //! simplicité — c'est-à-dire quand la réponse ne sera plus un écho.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::db::{Base, file, utilisateurs};
 use crate::error::ErrorCode;
@@ -54,8 +56,18 @@ const BAIL: Duration = Duration::from_secs(120);
 /// Nombre de prises au-delà duquel une tâche est abandonnée.
 const TENTATIVES_MAX: i16 = 3;
 
-/// Repos après une tâche traitée : court, car il y en a probablement une autre.
-const REPOS_MIN: Duration = Duration::from_millis(25);
+/// Repos après un échec de tâche, avant de reprendre la boucle.
+///
+/// **Ce n'est pas de la décoration, et sa suppression casse une garantie.** Une tâche qui
+/// échoue est aussitôt reprenable ; sans ce frein, les quatre workers épuisent ses trois
+/// tentatives en quelques millisecondes, et une panne passagère de Telegram — quelques
+/// secondes — suffit à faire abandonner définitivement un message qui serait passé au coup
+/// suivant. Le test de survie l'attrape : sans ce repos, la file finit en `echec` là où elle
+/// devrait finir en `en_attente`.
+///
+/// Il n'est PAS payé après un succès : la file vient alors de prouver qu'elle a du travail, et
+/// dormir y coûtait la moitié du cycle (mesuré : 25 ms sur 50 ms de bout en bout).
+const REPOS_APRES_ECHEC: Duration = Duration::from_millis(25);
 
 /// Repos quand la file est vide. Borne haute de la latence ajoutée par la scrutation.
 const REPOS_MAX: Duration = Duration::from_millis(250);
@@ -77,15 +89,98 @@ const VERIFICATION_REQUISE: &str = "Avant de commencer, ce service demande une v
      Elle n'est pas encore disponible — cette phase met en place la persistance. \
      Reviens quand l'inscription sera ouverte.";
 
+/// Les consommateurs, et ce qui les arrête.
+///
+/// # Pourquoi un type et pas trois valeurs libres
+///
+/// Le lancement et l'extinction étaient recopiés dans les deux portes d'entrée — service
+/// webhook et scrutation — sous la forme d'un `watch::Sender`, d'un `Vec<JoinHandle>` et d'une
+/// constante que chaque appelant devait assembler puis démonter dans le bon ordre. Les deux
+/// copies avaient **déjà divergé** le jour de leur écriture : l'une journalisait le lancement,
+/// l'autre non ; les messages d'échec différaient. Un type rend l'oubli impossible plutôt que
+/// surveillé — c'est le même raisonnement qui a mis l'admission en commun.
+pub struct Equipe {
+    arret: watch::Sender<bool>,
+    taches: Vec<JoinHandle<()>>,
+    /// Décrémenté par chaque worker en sortant, pour que la sonde dise ce qui **tourne** et non
+    /// ce qui a été lancé.
+    vivants: Arc<AtomicUsize>,
+}
+
+impl Equipe {
+    /// Lance [`WORKERS`] consommateurs sur cette base.
+    #[must_use]
+    pub fn lancer(base: &Base, canal: &Arc<Canal>) -> Self {
+        let (arret, ecoute) = watch::channel(false);
+        let vivants = Arc::new(AtomicUsize::new(WORKERS));
+        let taches = (0..WORKERS)
+            .map(|numero| {
+                tokio::spawn(tourner(
+                    base.clone(),
+                    Arc::clone(canal),
+                    ecoute.clone(),
+                    numero,
+                    Arc::clone(&vivants),
+                ))
+            })
+            .collect();
+        tracing::info!(workers = WORKERS, "consommateurs lancés");
+        Self {
+            arret,
+            taches,
+            vivants,
+        }
+    }
+
+    /// Le nombre de consommateurs encore en vie, partageable avec la sonde.
+    #[must_use]
+    pub fn vivants(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.vivants)
+    }
+
+    /// Demande l'arrêt et attend la fin des tâches en cours, sous une borne.
+    ///
+    /// Attend chaque worker l'un après l'autre plutôt qu'avec un `join_all` : ils sortent tous
+    /// sur le même signal, donc l'attente totale est celle du plus lent dans les deux cas — et
+    /// cela évite d'ajouter une dépendance pour une seule ligne.
+    pub async fn eteindre(self, delai: Duration) {
+        tracing::info!(delai_max = ?delai, "fin des tâches en cours");
+        let _ = self.arret.send(true);
+
+        let attente = async {
+            let mut interrompus = 0_usize;
+            for tache in self.taches {
+                if tache.await.is_err() {
+                    interrompus += 1;
+                }
+            }
+            interrompus
+        };
+        match tokio::time::timeout(delai, attente).await {
+            Ok(0) => tracing::info!("tâches en cours terminées, arrêt propre"),
+            Ok(interrompus) => {
+                tracing::error!(interrompus, "des workers se sont interrompus anormalement");
+            }
+            // Ce qui reste en file survit à l'arrêt : la borne ne perd rien, elle empêche
+            // seulement un worker bloqué de retenir le processus.
+            Err(_) => tracing::error!(
+                delai = ?delai,
+                "des tâches en cours n'ont pas fini ; elles seront reprises au bail"
+            ),
+        }
+    }
+}
+
 /// Consomme la file jusqu'à ce que l'arrêt soit demandé.
 ///
 /// Termine la tâche en cours avant de rendre la main : une tâche interrompue serait reprise par
 /// le bail, mais l'utilisateur recevrait sa réponse deux fois.
-pub async fn tourner(
+async fn tourner(
     base: Base,
     canal: Arc<Canal>,
     mut arret: watch::Receiver<bool>,
     numero: usize,
+    vivants: Arc<AtomicUsize>,
 ) {
     tracing::debug!(numero, "worker démarré");
     let mut traites: u64 = 0;
@@ -95,42 +190,48 @@ pub async fn tourner(
             break;
         }
 
-        let tache = match file::prendre(base.pool(), BAIL).await {
-            Ok(Some(tache)) => tache,
-            Ok(None) => {
-                // Rien à prendre : soit la file est vide, soit tout ce qu'elle contient
-                // appartient à des utilisateurs déjà servis ailleurs.
-                tokio::select! {
-                    biased;
-                    _ = arret.changed() => break,
-                    () = tokio::time::sleep(REPOS_MAX) => continue,
+        // Un seul point d'attente pour toute la boucle : chaque branche dit combien de temps
+        // se reposer, et l'attente est faite une fois, au même endroit, toujours interruptible.
+        let repos = match file::prendre(base.pool(), BAIL).await {
+            Ok(Some(tache)) => {
+                let issue = traiter(&base, &canal, &tache).await;
+                traites += 1;
+                match issue {
+                    // Rien à attendre : la file vient de prouver qu'elle a du travail.
+                    Issue::Close => continue,
+                    Issue::Echouee => REPOS_APRES_ECHEC,
                 }
             }
+            // Rien de prenable : soit la file est vide, soit tout ce qu'elle contient appartient
+            // à des utilisateurs déjà servis ailleurs.
+            Ok(None) => REPOS_MAX,
             Err(erreur) => {
                 tracing::error!(numero, %erreur, "file inaccessible");
-                tokio::select! {
-                    biased;
-                    _ = arret.changed() => break,
-                    () = tokio::time::sleep(REPOS_MAX) => continue,
-                }
+                REPOS_MAX
             }
         };
-
-        traiter(&base, &canal, &tache).await;
-        traites += 1;
 
         tokio::select! {
             biased;
             _ = arret.changed() => break,
-            () = tokio::time::sleep(REPOS_MIN) => {}
+            () = tokio::time::sleep(repos) => {}
         }
     }
 
+    vivants.fetch_sub(1, Ordering::Relaxed);
     tracing::debug!(numero, traites, "worker arrêté");
 }
 
+/// Ce qu'il est advenu d'une tâche traitée, du seul point de vue qui intéresse la boucle.
+enum Issue {
+    /// Close, quelle qu'en soit la raison — succès, ou refus définitif de Telegram.
+    Close,
+    /// Remise en file : la boucle doit freiner avant de la reprendre.
+    Echouee,
+}
+
 /// Traite une tâche prise, et la rend à la file dans tous les cas.
-async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) {
+async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
     let Ok(recu) = serde_json::from_value::<Recu>(tache.charge_utile.clone()) else {
         tracing::error!(
             tache = %tache.id,
@@ -138,7 +239,7 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) {
             "charge utile illisible, tâche abandonnée"
         );
         rendre_en_echec(base, tache, ErrorCode::TacheIllisible).await;
-        return;
+        return Issue::Echouee;
     };
 
     // La vérification d'âge est demandée ici et non à l'entrée : c'est le worker qui parle à
@@ -149,7 +250,7 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) {
         Err(erreur) => {
             tracing::error!(tache = %tache.id, %erreur, "vérification d'âge impossible");
             rendre_en_echec(base, tache, ErrorCode::Interne).await;
-            return;
+            return Issue::Echouee;
         }
     };
 
@@ -176,12 +277,8 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) {
                 morceaux = identifiants.len(),
                 "réponse envoyée"
             );
-            if let Err(erreur) = file::terminer(base.pool(), tache.id).await {
-                // La réponse est partie ; la tâche sera reprise au bail et renverra la même
-                // chose. C'est le seul point où un doublon reste possible, et il vaut mieux
-                // qu'une réponse perdue.
-                tracing::error!(tache = %tache.id, %erreur, "tâche traitée mais non close");
-            }
+            clore(base, tache, "tâche traitée mais non close").await;
+            Issue::Close
         }
         Err(erreur) => {
             if erreur.merite_une_reprise() {
@@ -193,15 +290,28 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) {
                     "réponse non envoyée, tâche remise en file"
                 );
                 rendre_en_echec(base, tache, ErrorCode::EnvoiImpossible).await;
+                Issue::Echouee
             } else {
                 // Un utilisateur qui bloque le bot n'est pas un incident, et réessayer
                 // referait exactement la même erreur : la tâche est close, pas reprise.
                 tracing::info!(chat_id = recu.chat_id, %erreur, "refus définitif de Telegram");
-                if let Err(erreur) = file::terminer(base.pool(), tache.id).await {
-                    tracing::error!(tache = %tache.id, %erreur, "tâche abandonnée mais non close");
-                }
+                clore(base, tache, "tâche abandonnée mais non close").await;
+                Issue::Close
             }
         }
+    }
+}
+
+/// Clôt une tâche, en journalisant si même cela échoue.
+///
+/// Pendant symétrique de [`rendre_en_echec`] : sans lui, le même geste était écrit deux fois
+/// avec deux messages divergents, et un lecteur cherchait un `clore` qui n'existait pas.
+///
+/// Si la clôture échoue, la tâche sera reprise au bail et renverra la même réponse. C'est le
+/// seul point où un doublon reste possible, et il vaut mieux qu'une réponse perdue.
+async fn clore(base: &Base, tache: &file::Tache, motif: &'static str) {
+    if let Err(erreur) = file::terminer(base.pool(), tache.id).await {
+        tracing::error!(tache = %tache.id, %erreur, motif);
     }
 }
 

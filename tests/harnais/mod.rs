@@ -42,6 +42,12 @@ pub use compagnon::fixtures::JETON;
 /// Le secret de webhook employé par les tests.
 pub use compagnon::fixtures::SECRET;
 
+/// L'identifiant de celui qui écrit dans les tests, tel que [`update_privee`] le produit.
+///
+/// Défini ici plutôt que recopié : quatre fichiers écrivaient `42` en dur à côté de la fabrique
+/// qui le produit, et changer l'identifiant du testeur les aurait cassés en silence.
+pub const UTILISATEUR: i64 = 42;
+
 /// Au-delà, un appel attendu est considéré comme n'étant jamais venu.
 ///
 /// Généreux à dessein : le but n'est pas de mesurer une latence, mais de ne pas rendre le test
@@ -107,7 +113,7 @@ impl FauxTelegram {
     ///
     /// `adresse_ecoute` est sur le port zéro : l'adresse réelle n'est connue qu'après liaison.
     pub fn config(&self, url_base: &str) -> Config {
-        compagnon::fixtures::config_de_test(&self.serveur.uri(), url_base)
+        compagnon::fixtures::config_de_test_sur(&self.serveur.uri(), url_base)
     }
 
     /// Fait échouer `sendMessage` avec un `500`, que Telegram traite comme transitoire.
@@ -365,13 +371,16 @@ impl EnMarche {
             .expect("le webhook doit répondre")
     }
 
-    /// Interroge la sonde de santé.
-    pub async fn sante(&self) -> Value {
+    /// Interroge la sonde de santé, **typée**.
+    ///
+    /// Rend une [`compagnon::http::Sante`] et non un `Value` : un champ renommé ou supprimé
+    /// devient une erreur de compilation au lieu d'une assertion qui compare `Null` à `Null`.
+    pub async fn sante(&self) -> compagnon::http::Sante {
         self.obtenir("/health")
             .await
             .json()
             .await
-            .expect("la sonde renvoie du JSON")
+            .expect("la sonde renvoie une Sante")
     }
 
     /// Poste un corps volumineux avec le secret de son choix.
@@ -484,15 +493,6 @@ impl EnMarche {
     pub const fn base(&self) -> &BaseDeTest {
         &self.base
     }
-
-    /// L'URL de la base de ce test, pour l'inspecter directement.
-    ///
-    /// Sert aux tests qui doivent constater un état que le service ne rend pas par HTTP — une
-    /// tâche restée en file après un arrêt, par exemple.
-    #[must_use]
-    pub fn url_base(&self) -> &str {
-        &self.base.url
-    }
 }
 
 /// Une mise à jour privée ordinaire, telle que Telegram l'envoie.
@@ -505,7 +505,7 @@ pub fn update_privee(update_id: i64, texte: &str) -> Value {
                 "id": 42, "is_bot": false, "first_name": "Erwan",
                 "username": "erwan", "language_code": "fr"
             },
-            "chat": {"id": 42, "first_name": "Erwan", "type": "private"},
+            "chat": {"id": UTILISATEUR, "first_name": "Erwan", "type": "private"},
             "date": 1_760_000_000_i64,
             "text": texte
         }

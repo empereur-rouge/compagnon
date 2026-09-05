@@ -13,10 +13,7 @@ mod harnais;
 
 use std::time::Duration;
 
-use harnais::{FauxTelegram, update_privee};
-
-/// L'identifiant que porte [`harnais::update_privee`].
-const UTILISATEUR: i64 = 42;
+use harnais::{FauxTelegram, UTILISATEUR, update_privee};
 
 #[tokio::test]
 async fn une_tache_non_traitee_survit_a_l_arret_du_service() {
@@ -116,7 +113,6 @@ async fn l_ordre_est_tenu_dans_une_conversation_malgre_les_workers_concurrents()
                 .nth(1)?
                 .split_whitespace()
                 .next()?
-                .trim_end_matches(|c: char| !c.is_ascii_digit())
                 .parse()
                 .ok()
         })
@@ -138,7 +134,10 @@ async fn la_file_est_bornee_par_utilisateur() {
 
     // Une table n'est pas bornée par construction, contrairement au canal de la phase 0 : sans
     // borne, un émetteur en rafale transforme un afflux en disque plein.
-    let borne = 32;
+    // Lue sur le code, pas recopiée : le harnais réexporte déjà `longueur_utf16` pour
+    // exactement cette raison — un test qui vérifie une limite avec sa propre valeur ne teste
+    // pas ce qu'il croit tester.
+    let borne = compagnon::db::file::EN_FILE_MAX_PAR_UTILISATEUR;
     let mut acceptes = 0;
     let mut refuses = 0;
     let mut premier_refus = None;
@@ -159,6 +158,10 @@ async fn la_file_est_bornee_par_utilisateur() {
     }
     println!("borne {borne} : {acceptes} acceptés, {refuses} refusés");
     println!("premier refus : {premier_refus:?}");
+    assert_eq!(
+        acceptes, borne,
+        "la borne effective doit être exactement celle que le code annonce"
+    );
     assert!(refuses > 0, "la file doit finir par refuser");
     let (_, statut) = premier_refus.expect("il y a eu un refus");
     assert_eq!(

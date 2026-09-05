@@ -9,37 +9,41 @@
 //!
 //! # Ordre et concurrence
 //!
-//! Plusieurs workers consomment la même file. Deux règles se combinent :
+//! Plusieurs workers consomment la même file. L'invariant à tenir est : **au plus une tâche en
+//! vol par utilisateur**. Deux messages d'une même personne sont ainsi traités dans l'ordre,
+//! pendant que les autres conversations avancent en parallèle.
+//!
+//! Cet invariant est tenu par un **index unique partiel**
+//! (`idx_une_tache_en_vol_par_utilisateur`, migration `0002`), pas par la requête. C'est
+//! délibéré, et c'est une correction : une première version l'exprimait par une composition de
+//! `not exists` et de `pg_try_advisory_xact_lock` dans le `WHERE`, ce qui ne tenait pas —
+//! PostgreSQL donne cette forme en contre-exemple, la correction dépendait du plan choisi
+//! (mesuré : six workers servis avec un plan, un seul avec l'autre), et la course restait
+//! ouverte en `read committed`. Voir l'en-tête de la migration.
+//!
+//! Deux mécanismes demeurent, chacun avec un rôle plus modeste et plus honnête :
 //!
 //! - **`for update skip locked`** : deux workers ne prennent jamais la même ligne, et aucun
 //!   n'attend l'autre.
-//! - **sérialisation par utilisateur** : la requête écarte tout utilisateur ayant déjà une
-//!   tâche en vol. Deux messages d'une même personne sont donc traités dans l'ordre, pendant
-//!   que les autres conversations avancent en parallèle.
-//!
-//! La seconde ne suffirait pas seule : deux workers pourraient constater simultanément
-//! qu'un utilisateur est libre. Le verrou consultatif `pg_try_advisory_xact_lock` ferme cette
-//! course — il ne vit que le temps de la transaction de prise, pas celui du traitement, ce qui
-//! évite de tenir une connexion ouverte pendant un appel de modèle.
+//! - **`not exists`** : filtre d'**efficacité**, qui évite la collision au lieu de la corriger.
+//!   S'il laisse passer, l'index refuse, et le worker rejoue.
 
 use std::time::Duration;
 
-use sqlx::{PgPool, Row as _};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::ErreurBase;
 
 /// Une tâche prise dans la file.
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct Tache {
     /// Identifiant, à rendre à [`terminer`] ou [`echouer`].
     pub id: Uuid,
-    /// À qui elle appartient — c'est aussi la clé de sérialisation.
+    /// À qui elle appartient. Sert aux journaux, et c'est la clé de sérialisation de la file.
     pub utilisateur_id: i64,
     /// Le contenu, tel qu'il a été enfilé.
     pub charge_utile: serde_json::Value,
-    /// Ce qu'il faut en faire.
-    pub type_tache: String,
     /// Nombre de prises, celle-ci comprise. Sert à borner les reprises.
     pub tentatives: i16,
 }
@@ -60,20 +64,30 @@ pub const EN_FILE_MAX_PAR_UTILISATEUR: i64 = 32;
 /// Rend `None` quand la borne est atteinte. Ce n'est pas une erreur : c'est de la
 /// contre-pression, et l'appelant doit la traduire par un refus que Telegram rejouera.
 ///
-/// L'insertion et le comptage sont **une seule instruction** : faites en deux, deux messages
-/// simultanés du même utilisateur pourraient tous deux constater qu'il reste de la place.
+/// La borne est **approximative sous concurrence**, et il faut le dire : deux insertions
+/// simultanées prennent chacune leur instantané, comptent la même chose, et passent toutes
+/// deux. Écrire le comptage et l'insertion dans une seule instruction ne sérialise rien — une
+/// instruction n'est pas une section critique. Le dépassement est borné par le nombre
+/// d'insertions vraiment concurrentes pour un même utilisateur, c'est-à-dire une poignée, ce
+/// qui est sans conséquence pour une borne dont le rôle est d'empêcher une inondation. La
+/// rendre exacte demanderait de sérialiser sur la ligne utilisateur, ce que le bénéfice ne
+/// justifie pas ici.
 ///
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si l'écriture échoue — notamment si l'utilisateur n'existe pas,
-/// la clé étrangère étant ce qui garantit qu'aucune tâche n'est orpheline.
+/// la clé étrangère étant ce qui garantit qu'aucune tâche n'est orpheline. Ou
+/// [`ErreurBase::ChargeUtile`] si la valeur ne se convertit pas.
 pub async fn enfiler(
     pool: &PgPool,
     utilisateur_id: i64,
     type_tache: &str,
-    charge_utile: &serde_json::Value,
+    charge_utile: &impl serde::Serialize,
 ) -> Result<Option<Uuid>, ErreurBase> {
-    let ligne = sqlx::query(
+    // La conversion vit ici plutôt que chez l'appelant : c'est ce module qui possède le format
+    // de la file, donc c'est à lui de répondre de ce qui y entre.
+    let charge_utile = serde_json::to_value(charge_utile)?;
+    Ok(sqlx::query_scalar(
         "insert into file_messages (utilisateur_id, type_tache, charge_utile)
          select $1, $2, $3
          where (select count(*) from file_messages
@@ -82,15 +96,10 @@ pub async fn enfiler(
     )
     .bind(utilisateur_id)
     .bind(type_tache)
-    .bind(charge_utile)
+    .bind(&charge_utile)
     .bind(EN_FILE_MAX_PAR_UTILISATEUR)
     .fetch_optional(pool)
-    .await
-    .map_err(ErreurBase::Requete)?;
-
-    ligne
-        .map(|l| l.try_get("id").map_err(ErreurBase::Requete))
-        .transpose()
+    .await?)
 }
 
 /// Prend une tâche, ou rend `None` s'il n'y a rien de prenable.
@@ -103,7 +112,7 @@ pub async fn enfiler(
 /// [`ErreurBase::Requete`] si la base refuse la requête.
 pub async fn prendre(pool: &PgPool, bail: Duration) -> Result<Option<Tache>, ErreurBase> {
     let secondes = i64::try_from(bail.as_secs()).unwrap_or(i64::MAX);
-    let ligne = sqlx::query(
+    let resultat = sqlx::query_as::<_, Tache>(
         "update file_messages f
          set statut = 'en_cours',
              bail_expire_le = now() + make_interval(secs => $1::bigint),
@@ -116,30 +125,24 @@ pub async fn prendre(pool: &PgPool, bail: Duration) -> Result<Option<Tache>, Err
                      select 1 from file_messages a
                      where a.utilisateur_id = c.utilisateur_id
                        and a.statut = 'en_cours'
-                       and a.bail_expire_le >= now()
-                       and a.id <> c.id)
-               and pg_try_advisory_xact_lock(c.utilisateur_id)
+                       and a.bail_expire_le >= now())
              order by c.cree_le
              for update skip locked
              limit 1)
-         returning f.id, f.utilisateur_id, f.charge_utile, f.type_tache, f.tentatives",
+         returning f.id, f.utilisateur_id, f.charge_utile, f.tentatives",
     )
     .bind(secondes)
     .fetch_optional(pool)
-    .await
-    .map_err(ErreurBase::Requete)?;
+    .await;
 
-    ligne
-        .map(|l| {
-            Ok(Tache {
-                id: l.try_get("id").map_err(ErreurBase::Requete)?,
-                utilisateur_id: l.try_get("utilisateur_id").map_err(ErreurBase::Requete)?,
-                charge_utile: l.try_get("charge_utile").map_err(ErreurBase::Requete)?,
-                type_tache: l.try_get("type_tache").map_err(ErreurBase::Requete)?,
-                tentatives: l.try_get("tentatives").map_err(ErreurBase::Requete)?,
-            })
-        })
-        .transpose()
+    match resultat {
+        Ok(tache) => Ok(tache),
+        // Un autre worker a pris une tâche de cet utilisateur entre notre filtre et notre
+        // écriture. L'index a refusé : c'est exactement son rôle, et ce n'est pas une erreur —
+        // c'est « rien à prendre pour l'instant ». L'appelant se repose et rejoue.
+        Err(sqlx::Error::Database(erreur)) if erreur.is_unique_violation() => Ok(None),
+        Err(erreur) => Err(ErreurBase::Requete(erreur)),
+    }
 }
 
 /// Marque une tâche comme traitée.
@@ -154,8 +157,7 @@ pub async fn terminer(pool: &PgPool, id: Uuid) -> Result<(), ErreurBase> {
     )
     .bind(id)
     .execute(pool)
-    .await
-    .map_err(ErreurBase::Requete)?;
+    .await?;
     Ok(())
 }
 
@@ -186,7 +188,6 @@ pub async fn echouer(
     .bind(code)
     .bind(tentatives_max)
     .execute(pool)
-    .await
-    .map_err(ErreurBase::Requete)?;
+    .await?;
     Ok(())
 }

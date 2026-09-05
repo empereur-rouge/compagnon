@@ -174,8 +174,11 @@ create index idx_file_a_prendre
     on file_messages (cree_le)
     where statut in ('en_attente', 'en_cours');
 
--- Sert la sous-requête de sérialisation par utilisateur (« cet utilisateur a-t-il déjà une
--- tâche en vol ? »), évaluée à chaque prise de tâche.
+-- Sert la sous-requête « cet utilisateur a-t-il déjà une tâche en vol ? », évaluée à chaque
+-- prise de tâche. Mesuré : le planificateur s'en sert pour `bail_expire_le >= now()` et
+-- applique l'égalité d'utilisateur en filtre de jointure — la colonne de tête ne travaille
+-- donc pas. Sans conséquence tant que l'ensemble des tâches en vol est borné par le nombre de
+-- workers, ce qui est le cas ; à revoir si ce nombre grandit d'un ordre de grandeur.
 create index idx_file_en_cours_par_utilisateur
     on file_messages (utilisateur_id, bail_expire_le)
     where statut = 'en_cours';

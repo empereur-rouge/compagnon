@@ -49,8 +49,9 @@ const REPOS_APRES_ECHEC: Duration = Duration::from_secs(3);
 
 /// Scrute jusqu'à ce que `arret` se réalise.
 ///
-/// Rend la main en ayant relâché l'expéditeur, ce qui referme la file et laisse le worker la
-/// vider — même contrat d'extinction que le service webhook.
+/// Rend la main dès l'arrêt demandé. Ce qu'elle a enfilé et qui n'a pas été traité reste en
+/// base : l'appelant arrête ensuite les consommateurs, qui finissent seulement leurs tâches en
+/// cours — même contrat d'extinction que le service webhook.
 pub async fn tourner(canal: &Canal, base: &Base, arret: impl Future<Output = ()> + Send) {
     // `0` signifie « tout ce qui est en attente ». Le retard accumulé pendant que le bot était
     // éteint est donc livré au démarrage, ce qui est le comportement souhaitable ici : un

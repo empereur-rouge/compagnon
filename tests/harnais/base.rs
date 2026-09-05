@@ -17,6 +17,7 @@
 
 #![allow(clippy::expect_used)]
 
+use compagnon::db::{Base, utilisateurs};
 use sqlx::{Connection as _, Executor as _, PgConnection};
 use uuid::Uuid;
 
@@ -25,6 +26,13 @@ pub struct BaseDeTest {
     /// L'URL à donner au service.
     pub url: String,
     nom: String,
+    /// Le pool ouvert à la création, gardé plutôt que jeté.
+    ///
+    /// Sans lui, chaque sonde du harnais rouvrait sa propre connexion — et surtout, ne pouvant
+    /// pas appeler les fonctions de `compagnon::db` qui prennent un `&PgPool`, elle réécrivait
+    /// leur SQL à la main. C'est ainsi que le harnais s'était mis à porter une seconde
+    /// définition de « marquer un âge vérifié », que la production, elle, n'appelait nulle part.
+    base: Base,
 }
 
 impl BaseDeTest {
@@ -68,14 +76,11 @@ impl BaseDeTest {
 
         // Migrée par le code de production, pas par une copie du schéma : une seconde
         // définition du schéma dans les tests finirait par diverger de la vraie.
-        compagnon::db::Base::connecter(&url)
+        let base = Base::ouvrir(&url)
             .await
-            .expect("base de test joignable")
-            .migrer()
-            .await
-            .expect("migrations applicables sur une base neuve");
+            .expect("base de test joignable et migrable");
 
-        Self { url, nom }
+        Self { url, nom, base }
     }
 
     /// Détruit la base, en coupant d'autorité les connexions qui traînent.
@@ -97,70 +102,51 @@ impl BaseDeTest {
 impl BaseDeTest {
     /// Inscrit un utilisateur et le marque comme ayant passé la vérification d'âge.
     ///
-    /// Reproduit ce que fera l'inscription de la phase 1.2. Les tests qui éprouvent le
-    /// dialogue doivent l'appeler d'abord : sans elle, le worker répond le message de
-    /// vérification plutôt que la réponse attendue — ce qui est le comportement voulu, et ce
-    /// que le test dédié éprouve.
+    /// Appelle **la fonction de production**, pas une copie de son SQL : c'est la règle que
+    /// `creer` énonce pour le schéma, et elle vaut pour les écritures. La version manuscrite
+    /// qu'elle remplace avait déjà divergé — elle inscrivait l'utilisateur absent, là où la
+    /// production ne touchait aucune ligne sans le dire.
     ///
     /// # Panics
     ///
     /// Si la base refuse l'écriture.
     pub async fn verifier_age(&self, utilisateur_id: i64) {
-        let mut cx = PgConnection::connect(&self.url)
+        utilisateurs::verifier_age(self.base.pool(), utilisateur_id, "declaration")
             .await
-            .expect("base de test joignable");
-        sqlx::query(
-            "insert into utilisateurs (id, age_verifie_le, methode_verification_age)
-             values ($1, now(), 'declaration')
-             on conflict (id) do update
-                set age_verifie_le = now(), methode_verification_age = 'declaration'",
-        )
-        .bind(utilisateur_id)
-        .execute(&mut cx)
-        .await
-        .expect("vérification d'âge enregistrée");
+            .expect("vérification d'âge enregistrée");
     }
 
     /// Compte les tâches encore à traiter, quel que soit leur état d'attente.
     ///
-    /// Sert à éprouver ce que l'extinction laisse derrière elle — ce que le service ne rend
-    /// par aucune interface.
+    /// Distincte de `Base::taches_en_attente` : celle-ci compte aussi les tâches à bail vivant,
+    /// que la sonde exclut. Deux questions différentes, pas une copie.
     ///
     /// # Panics
     ///
     /// Si la base refuse la lecture.
     pub async fn taches_non_traitees(&self) -> i64 {
-        let mut cx = PgConnection::connect(&self.url)
-            .await
-            .expect("base de test joignable");
-        let ligne: (i64,) = sqlx::query_as(
+        sqlx::query_scalar(
             "select count(*) from file_messages where statut in ('en_attente', 'en_cours')",
         )
-        .fetch_one(&mut cx)
+        .fetch_one(self.base.pool())
         .await
-        .expect("comptage des tâches");
-        ligne.0
+        .expect("comptage des tâches")
     }
-}
 
-impl BaseDeTest {
-    /// Force le bail d'une tâche à être déjà expiré.
+    /// Force le bail de toute tâche en cours à être déjà expiré.
     ///
-    /// Simule ce qui arrive quand le worker qui la tenait meurt sans la rendre : la tâche
-    /// reste `en_cours` avec une échéance dépassée, et doit redevenir prenable.
+    /// Simule ce qui arrive quand le worker qui la tenait meurt sans la rendre : la tâche reste
+    /// `en_cours` avec une échéance dépassée, et doit redevenir prenable.
     ///
     /// # Panics
     ///
     /// Si la base refuse l'écriture.
     pub async fn perimer_les_baux(&self) -> u64 {
-        let mut cx = PgConnection::connect(&self.url)
-            .await
-            .expect("base de test joignable");
         sqlx::query(
             "update file_messages set bail_expire_le = now() - interval '1 hour'
              where statut = 'en_cours'",
         )
-        .execute(&mut cx)
+        .execute(self.base.pool())
         .await
         .expect("péremption des baux")
         .rows_affected()
@@ -172,11 +158,8 @@ impl BaseDeTest {
     ///
     /// Si la base refuse la lecture.
     pub async fn etats_de_la_file(&self) -> Vec<(String, i64)> {
-        let mut cx = PgConnection::connect(&self.url)
-            .await
-            .expect("base de test joignable");
         sqlx::query_as("select statut, count(*) from file_messages group by statut order by statut")
-            .fetch_all(&mut cx)
+            .fetch_all(self.base.pool())
             .await
             .expect("lecture des états")
     }

@@ -13,6 +13,7 @@
 //! |---|---|---|
 //! | jeton du bot | l'URL de chaque appel sortant | une erreur `reqwest` journalisée |
 //! | secret du webhook | l'en-tête de chaque appel entrant | une réponse d'erreur, un journal de proxy |
+//! | mot de passe de la base | `DATABASE_URL` | le `Debug` de `Config`, les journaux de démarrage |
 
 #![allow(clippy::expect_used, clippy::panic)]
 
@@ -30,11 +31,7 @@ async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
     // Le vrai chemin, pas un mock : le port 9 (discard) est fermé, `reqwest` produit donc une
     // vraie erreur de connexion — celle qui, avant correction, imprimait
     // « error sending request for url (http://.../bot<JETON>/getMe) ».
-    let config = compagnon::fixtures::config_de_test(
-        // Port 9 (discard), fermé : provoque une vraie erreur de connexion `reqwest`.
-        "http://127.0.0.1:9",
-        "postgres://compagnon:motdepasse@localhost:5432/compagnon",
-    );
+    let config = compagnon::fixtures::config_de_test("http://127.0.0.1:9");
     let canal = Canal::new(&config).expect("le client doit se construire");
     let erreur = canal
         .identite()
@@ -65,11 +62,7 @@ async fn la_chaine_de_diagnostic_d_une_erreur_api_ne_traverse_pas_vers_une_url()
     // `ApiError::diagnostic` parcourt toute la chaîne de `source()` et appelle `to_string()`
     // sur chaque maillon. Si une erreur d'envoi était attachée comme cause, l'URL ressortirait
     // par ce chemin-là même si le `Display` de premier niveau était propre.
-    let config = compagnon::fixtures::config_de_test(
-        // Port 9 (discard), fermé : provoque une vraie erreur de connexion `reqwest`.
-        "http://127.0.0.1:9",
-        "postgres://compagnon:motdepasse@localhost:5432/compagnon",
-    );
+    let config = compagnon::fixtures::config_de_test("http://127.0.0.1:9");
     let canal = Canal::new(&config).expect("le client doit se construire");
     let source = canal.identite().await.expect_err("le port 9 est fermé");
 
@@ -123,4 +116,71 @@ async fn le_secret_du_webhook_n_apparait_dans_aucune_reponse() {
 
     service.eteindre().await;
     println!("\naucune réponse ne nomme ni ne divulgue le secret");
+}
+
+#[test]
+fn aucune_forme_d_url_de_base_ne_laisse_fuir_le_mot_de_passe() {
+    // Ce test existe parce que la version précédente de `masquer_url` échouait OUVERTE sur deux
+    // de ces formes, en documentant l'inverse. Elle découpait la chaîne sur « :// » puis sur
+    // « @ », ce qui est une grammaire devinée — et se tromper sur une forme à laquelle on n'a
+    // pas pensé donne ici un mot de passe dans un journal.
+    //
+    // Les formes ci-dessous ne sont pas imaginées : ce sont celles que `sqlx` accepte, prises
+    // de ses propres tests d'analyse.
+    const SECRET_BASE: &str = "MotDePasseQuiNeDoitJamaisSortir";
+
+    let formes = [
+        (
+            "nominale",
+            format!("postgres://compagnon:{SECRET_BASE}@base:5432/compagnon"),
+        ),
+        (
+            "mot de passe en paramètre",
+            format!("postgres:///?password={SECRET_BASE}"),
+        ),
+        (
+            "arobase dans l'utilisateur",
+            format!("postgres://user@host:{SECRET_BASE}@host:5432/base"),
+        ),
+        ("schéma long", format!("postgresql://u:{SECRET_BASE}@h/d")),
+        ("illisible", format!("pas une url du tout {SECRET_BASE}")),
+    ];
+
+    for (nom, url) in &formes {
+        let rendu = compagnon::config::masquer_url(url);
+        println!("{nom:28} -> {rendu}");
+        assert!(
+            !rendu.contains(SECRET_BASE),
+            "le mot de passe fuit sur la forme « {nom} »"
+        );
+    }
+    println!(
+        "\nles {} formes sont muettes sur le mot de passe",
+        formes.len()
+    );
+}
+
+#[test]
+fn le_debug_de_la_config_ne_montre_pas_le_mot_de_passe_de_la_base() {
+    // La même garantie, mais sur le chemin par lequel elle sortirait vraiment : `Config` est
+    // journalisée en entier au démarrage, par `servir` comme par `ecouter`.
+    const SECRET_BASE: &str = "MotDePasseDeLaBase";
+    let config = compagnon::fixtures::config_de_test_sur(
+        "https://api.telegram.org",
+        &format!("postgres://compagnon:{SECRET_BASE}@base:5432/compagnon"),
+    );
+    let rendu = format!("{config:?}");
+    println!("Debug de Config :\n  {rendu}");
+
+    assert!(
+        !rendu.contains(SECRET_BASE),
+        "le mot de passe de la base fuit dans le Debug"
+    );
+    // Et ce qui sert au diagnostic doit rester lisible : sans l'hôte ni la base, la ligne de
+    // journal ne répondrait pas à la première question d'un incident.
+    assert!(rendu.contains("base:5432"), "l'hôte doit rester visible");
+    assert!(
+        rendu.contains("compagnon"),
+        "l'utilisateur et la base doivent rester visibles"
+    );
 }

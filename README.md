@@ -16,8 +16,9 @@ Le webhook exige un domaine, un certificat valide et une machine joignable. Rien
 n'est nécessaire pour parler à son bot :
 
 ```bash
-cp .env.example .env          # y coller le jeton donné par @BotFather
-cargo run -- ecouter          # puis écrire au bot depuis Telegram
+cp .env.example .env             # y coller le jeton donné par @BotFather
+./scripts/base-de-test.sh        # un PostgreSQL jetable sur le port 5433
+cargo run -- ecouter             # puis écrire au bot depuis Telegram
 ```
 
 `ecouter` reçoit par **scrutation** (`getUpdates`) au lieu d'attendre un appel entrant : ni
@@ -37,7 +38,8 @@ docker compose exec bot compagnon sonde
 ## Vérifier
 
 ```bash
-cargo test --release -- --nocapture   # 25 unitaires + 16 de bout en bout + 1 doctest
+./scripts/base-de-test.sh             # les tests exigent un vrai PostgreSQL
+cargo test --release -- --nocapture   # 26 unitaires + 21 de bout en bout + 1 doctest
 cargo clippy --all-targets            # zéro avertissement attendu
 cargo doc --no-deps --open            # zéro avertissement attendu
 ```
@@ -69,7 +71,10 @@ compagnon webhook retirer          retire le webhook
 | ✅ | les deux secrets bannis des journaux, du proxy, et **du type des erreurs** |
 | ✅ | authentification du webhook **avant** que le corps ne soit lu |
 | ✅ | réception par scrutation, pour éprouver le bot depuis un poste de travail |
-| ⬜ | base, création d'assistant, modération, moteur de dialogue — phase 1 |
+| ✅ | file **en base à bail** : rien n'est perdu à un arrêt brutal |
+| ✅ | quatre consommateurs concurrents, ordre tenu **dans** chaque conversation |
+| ✅ | vérification d'âge exigée avant tout accès au moteur |
+| ⬜ | création d'assistant, modération, moteur de dialogue — phase 1.2+ |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |
 
@@ -107,6 +112,7 @@ secondes, ferait rejouer Telegram à chaque message.
 |---|---|
 | [Carte du projet](documentation/MOC.md) | par où commencer |
 | [Un assistant par personne](documentation/un-assistant-par-personne.md) | le modèle produit, et ce qu'il décide |
+| [Persistance](documentation/persistance.md) | base, file à bail, concurrence |
 | [Un seul bot](documentation/un-seul-bot.md) | pourquoi un seul bot Telegram |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |

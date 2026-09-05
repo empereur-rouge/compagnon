@@ -2,7 +2,7 @@
 tags: [moc]
 created: 2026-09-05
 updated: 2026-09-05
-version: v0.2.2
+version: v0.3.0
 ---
 
 # Carte du projet — compagnon
@@ -26,6 +26,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 | Fiche | Phase | Sujet |
 |---|---|---|
+| [[persistance]] | 1.1 | base, file à bail, workers concurrents, vérification d'âge |
 | [[transport-telegram]] | 0 | webhook **et scrutation**, authentification, file, envoi, découpage |
 | [[contrat-d-erreur]] | 0 | codes numériques, messages publics, journalisation |
 | [[un-seul-bot]] | 0 | pourquoi un seul bot Telegram, et ce que Telegram interdit |
@@ -38,7 +39,7 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 
 | Fiche à venir | Phase | Sujet |
 |---|---|---|
-| `assistants` | 1 | fiche possédée par l'utilisateur, création, modération |
+| `assistants` | 1.2 | fiche possédée par l'utilisateur, création, modération |
 | `moteur-de-dialogue` | 1 | appel du modèle, mise en cache du préfixe, refus |
 | `memoire` | 2 | journal roulant, souvenirs structurés, état de relation |
 | `medias` | 3 | file de génération à bail, cache de `file_id` |
@@ -54,6 +55,11 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
   [[un-assistant-par-personne]].
 - **Un seul bot Telegram pour tous** — l'utilisateur possède son assistant, pas un bot. Voir
   [[un-seul-bot]] : Telegram n'offre d'ailleurs aucune API de création de bot.
+- **La file survit au processus** — table à bail plutôt que canal en mémoire ; ce qui n'a pas
+  été traité est repris au démarrage suivant. Voir [[persistance]].
+- **La concurrence est donnée par la base, pas par le worker** — la requête de prise écarte
+  tout utilisateur déjà servi, donc l'ordre tient dans une conversation sans qu'aucun code Rust
+  ne synchronise quoi que ce soit.
 - **Deux portes, un seul chemin** — webhook en production, scrutation sur un poste de travail ;
   tout ce qui suit l'admission est rigoureusement identique, et testé comme tel.
 - **Le webhook n'appelle jamais Telegram** — il authentifie, enfile, acquitte. La production

@@ -55,7 +55,7 @@ fn journaliser(update_id: i64, ecart: Ecart) {
 }
 
 /// Ce qu'il est advenu d'un message retenu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Admission {
     /// Enfilé, un worker le prendra.
     Enfile,
@@ -78,14 +78,7 @@ pub enum Admission {
 pub async fn enfiler(base: &Base, recu: &Recu) -> Result<Admission, ErreurBase> {
     utilisateurs::assurer(base.pool(), recu.utilisateur_id, Some(&recu.prenom)).await?;
 
-    let charge = serde_json::to_value(recu).map_err(|erreur| {
-        // Un `Recu` est fait de types simples : cette conversion ne peut pas échouer en
-        // pratique. On ne l'écrase pas pour autant — un `unwrap` ici deviendrait faux le jour
-        // où `Recu` gagnerait un champ exotique, et il tomberait dans le chemin d'entrée.
-        ErreurBase::Requete(sqlx::Error::Encode(Box::new(erreur)))
-    })?;
-
-    let enfilee = file::enfiler(base.pool(), recu.utilisateur_id, TACHE_MESSAGE, &charge).await?;
+    let enfilee = file::enfiler(base.pool(), recu.utilisateur_id, TACHE_MESSAGE, recu).await?;
     Ok(if enfilee.is_some() {
         Admission::Enfile
     } else {

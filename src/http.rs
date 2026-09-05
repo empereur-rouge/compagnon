@@ -9,6 +9,7 @@
 //! censé empêcher. Une couche de ce module les rhabille avant qu'elles ne sortent.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::extract::Request;
@@ -18,7 +19,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -56,6 +57,8 @@ pub struct EtatApp {
     /// `PgPool` est interne­ment un `Arc` : cloner l'état à chaque requête reste trois
     /// incréments atomiques et zéro allocation, comme avec le canal mpsc qu'il remplace.
     pub base: Base,
+    /// Compteur des consommateurs encore en vie, tenu par l'équipe.
+    pub workers_vivants: Arc<AtomicUsize>,
     /// Quand le service a démarré, en secondes depuis l'époque Unix.
     pub demarre_le: i64,
 }
@@ -179,12 +182,23 @@ const fn code_pour_statut(statut: StatusCode) -> ErrorCode {
 ///
 /// Volontairement pauvre : cette adresse n'est pas authentifiée, elle sert au `HEALTHCHECK` du
 /// conteneur. Rien de ce qu'elle expose n'apprend quoi que ce soit sur les utilisateurs.
-#[derive(Debug, Serialize)]
+/// Réversible — `Serialize` **et** `Deserialize` — plutôt que sérialisable seulement.
+///
+/// C'est ce qui permet à un test de lire des champs typés au lieu d'un blob indexé par chaîne.
+/// La différence n'est pas cosmétique : `Value["file_libre"]` sur un champ supprimé rend `Null`
+/// en silence, et c'est exactement ainsi que le test de cette sonde s'était mis à comparer
+/// `Null` à `Null` — il passait quoi que le service renvoie. Un champ renommé est désormais une
+/// erreur de compilation.
+///
+/// Le prix est deux `String` au lieu de deux `&'static str`, soit deux petites allocations par
+/// appel de `/health` — une route qu'on interroge toutes les trente secondes, pas mille fois
+/// par seconde.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Sante {
     /// `ok` tant que le service répond.
-    pub statut: &'static str,
+    pub statut: String,
     /// Version du binaire.
-    pub version: &'static str,
+    pub version: String,
     /// Secondes écoulées depuis le démarrage.
     pub depuis: i64,
     /// Vrai si la base répond.
@@ -200,7 +214,12 @@ pub struct Sante {
     /// plus — l'information la plus utile que cette sonde puisse porter. `null` si la base
     /// n'a pas répondu.
     pub taches_en_attente: Option<i64>,
-    /// Nombre de consommateurs lancés, pour situer la valeur précédente.
+    /// Nombre de consommateurs **encore en vie**, pour situer la valeur précédente.
+    ///
+    /// Ce qui tourne, et non ce qui a été lancé. La version précédente recopiait la constante
+    /// — exactement la faute qu'un commentaire de ce fichier interdisait deux lignes plus haut
+    /// avant d'être supprimé avec le code qu'il gardait. Un worker qui meurt doit se voir ici,
+    /// sans quoi la sonde annonce quatre consommateurs devant une file qui n'avance plus.
     pub workers: usize,
 }
 
@@ -212,11 +231,11 @@ async fn sante(State(etat): State<EtatApp>) -> Json<Sante> {
     let taches_en_attente = etat.base.taches_en_attente().await.ok();
     let base_repond = taches_en_attente.is_some();
     Json(Sante {
-        statut: "ok",
-        version: VERSION,
+        statut: "ok".to_owned(),
+        version: VERSION.to_owned(),
         depuis: horloge::maintenant() - etat.demarre_le,
         base_repond,
         taches_en_attente,
-        workers: crate::worker::WORKERS,
+        workers: etat.workers_vivants.load(Ordering::Relaxed),
     })
 }

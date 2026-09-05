@@ -919,11 +919,11 @@
               "doing": "Lit la réponse : son propre message entre guillemets, suivi d'une note disant que c'est un écho de phase 0.",
               "thinking": "[Assumption] Ah — ce n'est pas encore fini. Au moins il me le dit.",
               "feeling": 2,
-              "pain": "[Assumption] Il n'y a rien à faire de plus. Un utilisateur qui arrive ici n'a aucune raison de revenir, et rien ne lui dit quand ce sera prêt.",
+              "pain": "[Assumption] Sans age_verifie_le, l'utilisateur reçoit un message de vérification et non l'écho — honnête, mais l'inscription qui le débloquerait n'existe pas encore (phase 1.2).",
               "opportunity": "[Assumption] Tant que la phase 1 n'est pas là, réserver le bot à un cercle fermé plutôt que de laisser un écho public déprécier la première impression — elle ne se rejoue pas. L'assistant que l'utilisateur vient créer est censé être le sien ; un écho anonyme est l'exact contraire de la promesse.",
               "evidence": "",
               "frontstage": "« <votre message> » suivi de « (écho — phase 0 : le transport fonctionne, aucun personnage n'est encore branché) ».",
-              "backstage": "worker::repondre construit le texte, Canal::envoyer_texte le découpe si besoin et envoie un sendMessage par morceau.",
+              "backstage": "Un des quatre workers prend la tâche en base (bail de 120 s), vérifie age_verifie_le, envoie sendChatAction puis sendMessage, et clôt la tâche. Un envoi refusé la remet en file jusqu'à trois tentatives. L'ordre dans une conversation est tenu par la requête de prise, pas par le worker.",
               "support": "src/worker.rs repondre, src/telegram/mod.rs envoyer_texte ; API Bot sendMessage."
             }
           ]
@@ -1073,11 +1073,11 @@
               "doing": "Écrit pendant un afflux ; la réponse tarde puis finit par arriver.",
               "thinking": "[Assumption] Il rame, mais il finit par répondre.",
               "feeling": 3,
-              "pain": "[Assumption] La contre-pression fonctionne — 503, Telegram rejoue — mais le rejeu peut arriver longtemps après, et l'utilisateur reçoit une réponse à un message qu'il a oublié.",
+              "pain": "[Assumption] Le refus est invisible pour l'utilisateur : Telegram rejoue en silence, et l'attente s'allonge sans qu'il sache pourquoi.",
               "opportunity": "[Assumption] Au-delà d'un certain retard, répondre au contexte plutôt qu'au message : une réponse tardive hors sujet est pire qu'une réponse absente.",
               "evidence": "",
               "frontstage": "Réponse très différée.",
-              "backstage": "try_send échoue sur file pleine ; webhook::recevoir renvoie ApiError code 5001 (FileSaturee), statut 503. Telegram rejoue. Un code de la tranche 5xxx et non 9xxx : une file pleine n'est pas une défaillance, et le contrat public doit permettre de les distinguer. La file est bornée à 256 places — non bornée, un afflux ferait grossir la mémoire jusqu'à l'arrêt brutal.",
+              "backstage": "La file vit en base. admission::enfiler refuse au-delà de 32 tâches non traitées pour un même utilisateur — borne par personne et non globale, sinon un seul émetteur en rafale ferait refuser tout le monde. ApiError code 5001, statut 503 : Telegram rejoue, le message est différé et non perdu.",
               "support": "src/webhook.rs recevoir, src/worker.rs CAPACITE_FILE."
             },
             {
@@ -1114,11 +1114,11 @@
               "doing": "Exécute `docker compose up --detach --build` : Docker envoie SIGTERM au conteneur courant.",
               "thinking": "[Assumption] Il y a des messages en cours de traitement — est-ce qu'ils passent à la trappe ?",
               "feeling": 3,
-              "pain": "[Assumption] Le vidage est désormais borné et son abandon journalisé, mais un kill -9 ou une coupure de courant perd toujours ce que la file contient : elle vit en mémoire. Limite connue et bornée de la phase 0, levée par la file en base de la phase 1.",
-              "opportunity": "[Assumption] Faire dire à la sonde combien de messages sont en attente, pour qu'un exploitant puisse choisir son moment de redéploiement.",
+              "pain": "[Assumption] La perte au kill -9 a disparu : la file est une table. Reste que la reprise dépend du volume des baux expirés au redémarrage, ce que rien n'affiche encore.",
+              "opportunity": "[Assumption] Faire dire à la sonde /health combien de tâches attendent — le champ existe (taches_en_attente), il ne reste qu'à le surveiller.",
               "evidence": "",
               "frontstage": "Les journaux : « arrêt demandé », « vidage de la file », « worker arrêté, file vidée », « arrêt terminé ».",
-              "backstage": "app::signal_d_arret écoute SIGINT et SIGTERM. axum::serve termine les requêtes en cours, puis le routeur est relâché — ce qui ferme l'entrée de la file — puis worker::tourner draine, sous une borne de DELAI_VIDAGE (25 s) alignée sur stop_grace_period (30 s). Un vidage interrompu est journalisé en ERROR au lieu d'être tranché en silence par SIGKILL.",
+              "backstage": "app::signal_d_arret écoute SIGINT et SIGTERM. axum::serve termine les requêtes en cours, puis les quatre workers reçoivent le signal d'arrêt et finissent leur tâche courante sous DELAI_VIDAGE (25 s), aligné sur stop_grace_period (30 s). Ce qui reste en file N'EST PLUS vidé : il survit à l'arrêt en base et sera repris au démarrage suivant.",
               "support": "src/app.rs signal_d_arret, Prepare::servir, src/worker.rs tourner."
             },
             {

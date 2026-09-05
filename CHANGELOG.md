@@ -215,6 +215,57 @@ Phase 0 — la boucle de transport, prouvée de bout en bout.
 - **change(http)** : `file_capacite` est lu sur le canal (`max_capacity`) et non recopié depuis
   la constante — les deux chiffres de la sonde viennent ainsi de la même source.
 
+### Fixed
+
+Trois défauts trouvés par la revue `/simplify` et vérifiés par la mesure avant correction —
+tous trois introduits par les deux commits de cette phase.
+
+- **fix(config)** : `masquer_url` **laissait fuir le mot de passe de la base**. Elle découpait
+  l'URL sur `://` puis sur `@`, une grammaire devinée, et rendait la chaîne verbatim quand elle
+  ne trouvait pas d'`@` — alors que sa documentation affirmait l'inverse. Deux formes que `sqlx`
+  accepte imprimaient le mot de passe dans les journaux de démarrage : `postgres:///?password=…`
+  et une URL dont le nom d'utilisateur contient une arobase. Le rendu est désormais reconstruit
+  à partir des parties analysées par `sqlx` lui-même, donc exhaustif par construction. Cinq
+  formes éprouvées dans `tests/secrets.rs`.
+- **fix(db)** : la sérialisation par utilisateur **ne tenait que par chance**. Elle reposait sur
+  un `pg_try_advisory_xact_lock` placé dans le `WHERE` — forme que PostgreSQL donne en
+  contre-exemple, annotée « danger! ». Mesuré : 200 verrous posés pour réclamer une tâche, et
+  une correction dépendante du plan (six workers servis avec un plan, **un seul** avec l'autre).
+  La course qu'il prétendait fermer a été reproduite. L'invariant est désormais tenu par un
+  index unique partiel, qui vaut quel que soit le plan et le niveau d'isolation.
+- **fix(test)** : le test de la sonde **passait quoi que le service renvoie**. Il comparait deux
+  champs supprimés par ce même commit ; `Value` indexé par une clé absente rend `Null`, donc
+  l'assertion comparait `Null` à `Null`. `Sante` est maintenant réversible et le harnais la rend
+  typée : un champ renommé devient une erreur de compilation.
+- **fix(worker)** : le repos de 25 ms était payé après chaque **succès** — la moitié du cycle
+  mesuré — alors qu'il est indispensable après un **échec**, où son absence fait épuiser les
+  trois tentatives en quelques millisecondes.
+- **fix(db)** : index manquant pour la borne par utilisateur, sur le chemin chaud du webhook.
+  Mesuré : 1,963 ms à 50 000 tâches en attente, contre 0,044 ms avec l'index.
+- **fix(db)** : `assurer` faisait mentir `mis_a_jour_le`. Un `do update` inconditionnel à chaque
+  message déclenchait le trigger d'horodatage, faisant dire à la colonne « dernier message
+  reçu » au lieu de « dernière modification » — c'est-à-dire exactement la colonne d'audit
+  inutilisable que la migration dit vouloir éviter.
+- **fix(test)** : la vérification d'âge, fonctionnalité vedette de cette phase, **n'avait aucun
+  test**. Quatre tests l'écartaient en préambule, aucun ne l'éprouvait. Vérifié comme détectant
+  bien sa suppression.
+
+### Changed (revue)
+
+- **change(worker)** : un type `Equipe` possède les consommateurs. Le lancement et l'extinction
+  étaient recopiés dans les deux portes d'entrée et **avaient déjà divergé** le jour de leur
+  écriture.
+- **change(db)** : `Base::ouvrir` compose connexion et migration — « un `Base` existe » implique
+  « son schéma est à jour », un fait de typage plutôt qu'une convention d'appel.
+- **change(db)** : `ErreurBase::ChargeUtile` remplace un `sqlx::Error::Encode` détourné, qui
+  annonçait « requête refusée par la base » pour une base qui n'avait rien reçu.
+- **change(test)** : le harnais appelle `utilisateurs::verifier_age` au lieu de réécrire son
+  SQL — la fonction de production n'avait aucun appelant pendant que sa copie tournait dans
+  neuf tests, et les deux avaient déjà divergé.
+- **change(http)** : la sonde annonce les consommateurs **encore en vie**, pas la constante.
+- **change(db)** : `#[from]` sur `ErreurBase`, `query_scalar` et `FromRow` — seize recopies de
+  `map_err(ErreurBase::Requete)` masquaient le SQL qu'elles entouraient.
+
 ### Removed
 
 - `horloge::instant`, `http::adresse_liee`, `EtatApp::new` : trois items publics sans appelant

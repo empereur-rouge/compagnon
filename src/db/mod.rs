@@ -20,8 +20,8 @@ pub mod utilisateurs;
 
 use std::time::Duration;
 
+use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row as _};
 
 /// Délai au-delà duquel l'obtention d'une connexion du pool est abandonnée.
 ///
@@ -31,9 +31,17 @@ const DELAI_ACQUISITION: Duration = Duration::from_secs(5);
 
 /// Nombre maximal de connexions du pool.
 ///
-/// Chaque worker en détient une pendant qu'il traite, et la sonde en emprunte une. Le pool
-/// doit donc être un peu plus large que le nombre de workers, sans quoi la sonde de santé se
-/// mettrait à expirer précisément quand le service est chargé — au pire moment.
+/// **Ce n'est pas le nombre de workers qui dimensionne ce chiffre.** Un worker ne détient
+/// aucune connexion pendant qu'il traite : `fetch_optional(&pool)` en emprunte une, l'exécute
+/// et la rend aussitôt, alors que le temps de traitement est presque entièrement l'appel
+/// Telegram qui suit. Mesuré : six à quinze connexions ouvertes en régime, jamais la borne.
+///
+/// Le vrai dimensionneur est la concurrence du webhook — Telegram livre jusqu'à quarante
+/// appels simultanés. À 0,19 ms par requête, seize connexions en servent des dizaines de
+/// milliers par seconde.
+///
+/// La nuance comptera en phase 1.3 : si une transaction est un jour tenue pendant l'appel de
+/// modèle, le raisonnement change du tout au tout et ce chiffre avec lui.
 const CONNEXIONS_MAX: u32 = 16;
 
 /// Les migrations, embarquées dans le binaire à la compilation.
@@ -52,11 +60,26 @@ pub enum ErreurBase {
 
     /// Une migration a échoué, ou le schéma en place diverge de celui attendu.
     #[error("migration refusée : {0}")]
-    Migration(#[source] sqlx::migrate::MigrateError),
+    Migration(#[from] sqlx::migrate::MigrateError),
 
     /// Une requête a échoué.
+    ///
+    /// `#[from]` plutôt qu'un `map_err` à chaque requête : c'est la convention du dépôt
+    /// (`cli::ErreurCli`, `app::ErreurDemarrage`, `telegram::Canal`), et seize recopies de la
+    /// même incantation masquaient la logique SQL qu'elles entouraient. `Connexion` reste en
+    /// `#[source]` explicite — elle n'a qu'un site de construction, ce qui lève l'ambiguïté
+    /// entre les deux variantes qui portent une `sqlx::Error`.
     #[error("requête refusée par la base : {0}")]
-    Requete(#[source] sqlx::Error),
+    Requete(#[from] sqlx::Error),
+
+    /// Une charge utile n'a pas pu être convertie avant d'être enfilée.
+    ///
+    /// Variante à part, et non un `Requete` emprunté : rien n'a atteint la base quand elle
+    /// survient, et l'annoncer comme « requête refusée par la base » enverrait un exploitant
+    /// regarder PostgreSQL pour un défaut qui est chez nous. C'est aussi ce qui garde
+    /// `Requete` dans le domaine que son test de non-fuite couvre — celui des erreurs `sqlx`.
+    #[error("charge utile inconvertible : {0}")]
+    ChargeUtile(#[from] serde_json::Error),
 }
 
 /// Le pool de connexions, et ce qu'on en fait.
@@ -89,6 +112,21 @@ impl Base {
         Ok(Self { pool })
     }
 
+    /// Joint la base **et** met son schéma à jour.
+    ///
+    /// Les deux gestes vont ensemble : les séparer obligeait chaque appelant à penser à faire
+    /// le second, dans le bon ordre. Composés ici, « un [`Base`] existe » implique « son schéma
+    /// est à jour » — un fait de typage plutôt qu'une convention d'appel.
+    ///
+    /// # Errors
+    ///
+    /// [`ErreurBase::Connexion`] ou [`ErreurBase::Migration`].
+    pub async fn ouvrir(url: &str) -> Result<Self, ErreurBase> {
+        let base = Self::connecter(url).await?;
+        base.migrer().await?;
+        Ok(base)
+    }
+
     /// Applique les migrations en attente.
     ///
     /// # Errors
@@ -98,10 +136,7 @@ impl Base {
     /// comportement voulu : une migration éditée après coup est une divergence silencieuse
     /// entre le schéma du code et celui de la production.
     pub async fn migrer(&self) -> Result<(), ErreurBase> {
-        MIGRATIONS
-            .run(&self.pool)
-            .await
-            .map_err(ErreurBase::Migration)
+        Ok(MIGRATIONS.run(&self.pool).await?)
     }
 
     /// Le pool, pour les modules de requêtes.
@@ -110,26 +145,19 @@ impl Base {
         &self.pool
     }
 
-    /// Vrai si la base répond. Utilisé par la sonde de santé.
-    pub async fn repond(&self) -> bool {
-        sqlx::query("select 1").fetch_one(&self.pool).await.is_ok()
-    }
-
     /// Nombre de tâches encore à traiter — la mesure la plus utile de la sonde.
     ///
     /// # Errors
     ///
     /// [`ErreurBase::Requete`] si la base ne répond pas.
     pub async fn taches_en_attente(&self) -> Result<i64, ErreurBase> {
-        let ligne = sqlx::query(
-            "select count(*) as n from file_messages
+        Ok(sqlx::query_scalar(
+            "select count(*) from file_messages
              where statut = 'en_attente'
                 or (statut = 'en_cours' and bail_expire_le < now())",
         )
         .fetch_one(&self.pool)
-        .await
-        .map_err(ErreurBase::Requete)?;
-        ligne.try_get("n").map_err(ErreurBase::Requete)
+        .await?)
     }
 }
 

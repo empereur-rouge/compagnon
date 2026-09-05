@@ -8,7 +8,7 @@
 //!
 //! Pas de catalogue partagé — voir `documentation/un-assistant-par-personne.md`.
 //!
-//! # Phase 0 — ce qui existe aujourd'hui
+//! # Ce qui existe aujourd'hui
 //!
 //! La boucle nue, et rien d'autre : Telegram appelle le webhook, le service authentifie
 //! l'appel, extrait le message, et répond en écho. Pas de base, pas de modèle, pas de

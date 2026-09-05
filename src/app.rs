@@ -27,8 +27,6 @@ use std::time::Duration;
 
 use axum::Router;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 use crate::config::Config;
 use crate::db::{Base, ErreurBase};
@@ -37,9 +35,12 @@ use crate::http::{self, EtatApp};
 use crate::scrutation;
 use crate::telegram::envoi::ErreurEnvoi;
 use crate::telegram::{Canal, ErreurCanal};
-use crate::worker::{self, WORKERS};
+use crate::worker::Equipe;
 
-/// Délai au-delà duquel le vidage de la file est abandonné à l'extinction.
+/// Délai au-delà duquel on cesse d'attendre les tâches en cours, à l'extinction.
+///
+/// Ne « vide » plus rien, malgré son nom d'origine : ce qui reste en file survit à l'arrêt.
+/// Cette borne empêche seulement un worker bloqué de retenir le processus.
 ///
 /// **Ce nombre est lié à `stop_grace_period` dans `compose.yaml`** : Docker envoie `SIGKILL`
 /// passé son propre sursis, et un vidage plus long que lui serait tranché sans un mot. Les deux
@@ -91,9 +92,7 @@ pub struct Prepare {
     pub adresse: SocketAddr,
     ecoute: TcpListener,
     routeur: Router,
-    /// Émetteur du signal d'arrêt. Le relâcher suffirait, mais l'envoi explicite se lit mieux.
-    arret_workers: watch::Sender<bool>,
-    workers: Vec<JoinHandle<()>>,
+    equipe: Equipe,
 }
 
 /// Assemble le service et prend l'adresse d'écoute, sans encore servir.
@@ -117,8 +116,7 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
     // que par une commande séparée retire une étape d'exploitation qu'on peut oublier — et un
     // service tournant sur un schéma incomplet est une panne qui ne se déclare qu'au premier
     // message, donc devant un utilisateur.
-    let base = Base::connecter(&config.url_base).await?;
-    base.migrer().await?;
+    let base = Base::ouvrir(&config.url_base).await?;
     tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
 
     // L'écoute est prise AVANT le lancement du worker : tout ce qui peut échouer d'abord,
@@ -136,22 +134,12 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
     // éphémère que seul le système connaît, et c'est celui-là qu'il faut annoncer.
     let adresse = ecoute.local_addr().map_err(echec)?;
 
-    let (arret_workers, ecoute_arret) = watch::channel(false);
-    let workers = (0..WORKERS)
-        .map(|numero| {
-            tokio::spawn(worker::tourner(
-                base.clone(),
-                Arc::clone(&canal),
-                ecoute_arret.clone(),
-                numero,
-            ))
-        })
-        .collect();
-    tracing::info!(workers = WORKERS, "consommateurs lancés");
+    let equipe = Equipe::lancer(&base, &canal);
 
     let routeur = http::routeur(EtatApp {
         canal,
         base,
+        workers_vivants: equipe.vivants(),
         demarre_le: horloge::maintenant(),
     });
 
@@ -159,8 +147,7 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
         adresse,
         ecoute,
         routeur,
-        arret_workers,
-        workers,
+        equipe,
     })
 }
 
@@ -178,8 +165,7 @@ impl Prepare {
             adresse,
             ecoute,
             routeur,
-            arret_workers,
-            workers,
+            equipe,
         } = self;
 
         tracing::info!(%adresse, version = crate::VERSION, "service à l'écoute");
@@ -196,36 +182,8 @@ impl Prepare {
         // de la vider — ce qu'elle contient survit à l'arrêt et sera repris au démarrage
         // suivant — mais seulement de laisser les tâches EN COURS se terminer. Une tâche
         // interrompue serait reprise au bail, et l'utilisateur recevrait deux fois la même
-        // réponse. La borne reste, pour qu'un worker bloqué ne retienne pas le processus.
-        tracing::info!(delai_max = ?DELAI_VIDAGE, "plus de requête en cours, fin des tâches en cours");
-        let _ = arret_workers.send(true);
-        // Attendus l'un après l'autre sous une borne commune, plutôt qu'avec un `join_all` :
-        // ils sortent tous sur le même signal, donc l'attente totale est celle du plus lent
-        // dans les deux cas — et cela évite d'ajouter une dépendance pour une seule ligne.
-        let attente = async {
-            let mut interrompus = 0_usize;
-            for worker in workers {
-                if worker.await.is_err() {
-                    interrompus += 1;
-                }
-            }
-            interrompus
-        };
-        match tokio::time::timeout(DELAI_VIDAGE, attente).await {
-            Ok(0) => tracing::info!("tâches en cours terminées, arrêt propre"),
-            Ok(interrompus) => {
-                tracing::error!(interrompus, "des workers se sont interrompus anormalement");
-            }
-            // Le vidage était auparavant NON borné, alors que chaque `sendMessage` a son
-            // propre délai de 15 s : une file pleine face à un Telegram lent pouvait demander
-            // une heure, très au-delà du sursis que Docker accorde. La garantie « ce qui a été
-            // accusé est traité » était donc déjà tronquée en production, et personne ne le
-            // voyait. Bornée, la troncature devient un échec bruyant et daté.
-            Err(_) => tracing::error!(
-                delai = ?DELAI_VIDAGE,
-                "des tâches en cours n'ont pas fini ; elles seront reprises au bail"
-            ),
-        }
+        // réponse.
+        equipe.eteindre(DELAI_VIDAGE).await;
 
         resultat.map_err(ErreurDemarrage::Service)
     }
@@ -277,46 +235,17 @@ pub async fn scruter(
     canal.retirer_webhook().await?;
     tracing::info!("webhook retiré : la scrutation et le webhook s'excluent");
 
-    let base = Base::connecter(&config.url_base).await?;
-    base.migrer().await?;
+    let base = Base::ouvrir(&config.url_base).await?;
     tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
 
     let canal = Arc::new(canal);
-    let (arret_workers, ecoute_arret) = watch::channel(false);
-    let workers: Vec<_> = (0..WORKERS)
-        .map(|numero| {
-            tokio::spawn(worker::tourner(
-                base.clone(),
-                Arc::clone(&canal),
-                ecoute_arret.clone(),
-                numero,
-            ))
-        })
-        .collect();
+    let equipe = Equipe::lancer(&base, &canal);
 
     scrutation::tourner(&canal, &base, arret).await;
 
-    // Même contrat d'extinction que le service webhook : ce qui reste en file survit à l'arrêt,
-    // seules les tâches en cours doivent finir.
-    tracing::info!(delai_max = ?DELAI_VIDAGE, "fin des tâches en cours");
-    let _ = arret_workers.send(true);
-    let attente = async {
-        let mut interrompus = 0_usize;
-        for worker in workers {
-            if worker.await.is_err() {
-                interrompus += 1;
-            }
-        }
-        interrompus
-    };
-    match tokio::time::timeout(DELAI_VIDAGE, attente).await {
-        Ok(0) => tracing::info!("tâches en cours terminées, arrêt propre"),
-        Ok(interrompus) => tracing::error!(interrompus, "des workers se sont interrompus"),
-        Err(_) => tracing::error!(
-            delai = ?DELAI_VIDAGE,
-            "des tâches en cours n'ont pas fini ; elles seront reprises au bail"
-        ),
-    }
+    // Même contrat d'extinction que le service webhook, et désormais le même code : ce qui
+    // reste en file survit à l'arrêt, seules les tâches en cours doivent finir.
+    equipe.eteindre(DELAI_VIDAGE).await;
     Ok(())
 }
 

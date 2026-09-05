@@ -360,10 +360,7 @@ mod tests {
     use crate::fixtures::SECRET;
 
     fn canal_de_test() -> Canal {
-        let config = crate::fixtures::config_de_test(
-            "https://api.telegram.org",
-            "postgres://compagnon:motdepasse@localhost:5432/compagnon",
-        );
+        let config = crate::fixtures::config_de_test("https://api.telegram.org");
         Canal::new(&config).expect("le client doit se construire")
     }
 

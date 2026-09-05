@@ -27,6 +27,14 @@ pub const JETON: &str = "123456789:AAExempleDeJetonQuiNeSertAAbsolumen";
 /// Secret de webhook d'exemple, dans les bornes acceptées par Telegram.
 pub const SECRET: &str = "un-secret-de-quarante-huit-caracteres-exactement";
 
+/// URL de base **fictive**, pour les tests qui ne touchent pas à la base.
+///
+/// Cinq appelants passaient chacun leur littéral à `config_de_test` alors qu'aucun n'ouvre de
+/// connexion — c'est la duplication que ce module a été créé pour supprimer, réapparue un cran
+/// plus bas. `config_de_test` l'emploie par défaut ; seuls les tests qui ont besoin d'une vraie
+/// base fournissent la leur, par [`config_de_test_sur`].
+pub const URL_BASE_FICTIVE: &str = "postgres://compagnon:motdepasse@localhost:5432/compagnon";
+
 /// URL de la base de test, surchargeable par `DATABASE_URL_TEST`.
 ///
 /// Le port 5433 et non 5432 : un PostgreSQL de développement déjà installé sur la machine ne
@@ -37,9 +45,18 @@ pub fn url_base_test() -> String {
         .unwrap_or_else(|_| "postgres://compagnon:test@127.0.0.1:5433/compagnon_test".to_owned())
 }
 
+/// Une configuration complète, avec une URL de base fictive.
+///
+/// Pour les tests qui n'ouvrent aucune connexion — la majorité. Ceux qui en ont besoin
+/// appellent [`config_de_test_sur`].
+#[must_use]
+pub fn config_de_test(api: &str) -> Config {
+    config_de_test_sur(api, URL_BASE_FICTIVE)
+}
+
 /// Une configuration complète, pointant vers `api` pour Telegram et `base` pour PostgreSQL.
 #[must_use]
-pub fn config_de_test(api: &str, base: &str) -> Config {
+pub fn config_de_test_sur(api: &str, base: &str) -> Config {
     Config {
         jeton_bot: JETON.to_owned(),
         secret_webhook: SECRET.to_owned(),

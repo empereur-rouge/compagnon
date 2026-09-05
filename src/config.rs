@@ -20,6 +20,8 @@
 use std::fmt;
 use std::net::SocketAddr;
 
+use sqlx::postgres::PgConnectOptions;
+
 /// Racine de l'API Telegram, quand `API_TELEGRAM` n'est pas positionnée.
 const API_TELEGRAM_DEFAUT: &str = "https://api.telegram.org";
 
@@ -189,40 +191,52 @@ fn lire_ou(nom: &'static str, defaut: &str) -> String {
 
 /// Masque le mot de passe d'une URL de connexion, en gardant ce qui sert au diagnostic.
 ///
-/// Une URL de base a la forme `schéma://utilisateur:motdepasse@hôte:port/base`. Savoir sur
-/// quel hôte et quelle base on est connecté est la première question d'un incident ; le mot
-/// de passe, lui, n'a rien à faire dans un journal. On ne masque donc que lui.
+/// # Pourquoi analyser plutôt que découper
 ///
-/// Si la forme n'est pas reconnue, tout est masqué : mieux vaut un journal muet qu'un journal
-/// qui divulgue une forme d'URL à laquelle on n'avait pas pensé.
+/// Une première version découpait la chaîne sur `://` puis sur `@`, en supposant la grammaire
+/// `schéma://utilisateur:motdepasse@hôte`. Elle **laissait fuir le mot de passe sur deux formes
+/// que `sqlx` accepte**, mesuré :
+///
+/// - `postgres:///?password=secret` — pas d'`@`, donc l'URL était rendue entière ;
+/// - `postgres://user@host:secret@host:5432/base` — un `@` dans le nom d'utilisateur, donc la
+///   coupure tombait au mauvais endroit et le mot de passe partait dans le rendu.
+///
+/// La doc affirmait pourtant que la fonction échouait *fermée*. Deviner une grammaire, c'est
+/// se tromper sur les formes auxquelles on n'a pas pensé — et ici la conséquence est un secret
+/// dans un journal.
+///
+/// Le rendu est désormais **reconstruit à partir des parties analysées** par `sqlx` lui-même.
+/// Il est donc exhaustif par construction, y compris pour les formes que `sqlx` acceptera
+/// demain : ce qui n'est pas reconnu comme hôte, port, utilisateur ou base ne peut pas sortir.
 #[must_use]
 pub fn masquer_url(url: &str) -> String {
-    let Some((schema, reste)) = url.split_once("://") else {
-        return "<masqué, forme inattendue>".to_owned();
+    let Ok(options) = url.parse::<PgConnectOptions>() else {
+        // Illisible pour `sqlx` : illisible pour nous aussi, donc rien ne sort.
+        return "<masqué, URL illisible>".to_owned();
     };
-    let Some((identifiants, hote)) = reste.split_once('@') else {
-        // Pas d'identifiants dans l'URL : il n'y a pas de mot de passe à masquer.
-        return url.to_owned();
-    };
-    let utilisateur = identifiants
-        .split_once(':')
-        .map_or(identifiants, |(u, _)| u);
-    format!("{schema}://{utilisateur}:<masqué>@{hote}")
+    format!(
+        "postgres://{}@{}:{}/{}",
+        options.get_username(),
+        options.get_host(),
+        options.get_port(),
+        options.get_database().unwrap_or("(défaut)"),
+    )
 }
 
-/// Vérifie qu'une URL de connexion porte bien un schéma PostgreSQL.
+/// Vérifie qu'une URL de connexion est lisible par `sqlx`.
 ///
-/// Ne valide que le schéma : le reste est l'affaire de `sqlx`, dont l'erreur sera claire. Un
-/// schéma erroné, lui, produit un message obscur qu'il vaut mieux intercepter au démarrage.
+/// Analyser **est** la validation : elle accepte exactement ce que `sqlx` accepte, plutôt que
+/// ce qu'on a supposé qu'il acceptait. Le contrôle de schéma manuscrit qu'elle remplace
+/// laissait passer des URL que `sqlx` refusait ensuite, avec un message obscur, au démarrage.
 fn valider_url_base(brut: &str) -> Result<(), ErreurConfig> {
-    if brut.starts_with("postgres://") || brut.starts_with("postgresql://") {
-        return Ok(());
-    }
-    Err(ErreurConfig::Invalide {
-        variable: "DATABASE_URL",
-        // La raison ne reprend surtout pas la valeur : elle porte un mot de passe.
-        raison: "schéma attendu « postgres:// » ou « postgresql:// »".to_owned(),
-    })
+    brut.parse::<PgConnectOptions>()
+        .map(|_| ())
+        .map_err(|erreur| ErreurConfig::Invalide {
+            variable: "DATABASE_URL",
+            // Le message de `sqlx` décrit la forme, pas la valeur — vérifié : ni l'URL ni le
+            // mot de passe n'y figurent, quelle que soit la classe d'erreur.
+            raison: format!("URL de connexion illisible ({erreur})"),
+        })
 }
 
 /// Vérifie qu'un jeton a la forme `<chiffres>:<35 caractères>` de `@BotFather`.
@@ -307,10 +321,7 @@ mod tests {
         println!("jeton d'essai : {JETON_EXEMPLE}");
         println!("  partie secrète : {} caractères", JETON_EXEMPLE.len() - 10);
         valider_jeton_bot(JETON_EXEMPLE).expect("ce jeton doit être accepté");
-        let config = crate::fixtures::config_de_test(
-            API_TELEGRAM_DEFAUT,
-            "postgres://compagnon:motdepasse@localhost:5432/compagnon",
-        );
+        let config = crate::fixtures::config_de_test(API_TELEGRAM_DEFAUT);
         println!("  identifiant extrait : {}", config.identifiant_bot());
         assert_eq!(config.identifiant_bot(), "123456789");
     }
@@ -364,10 +375,7 @@ mod tests {
 
     #[test]
     fn le_debug_de_la_config_ne_laisse_fuir_aucun_secret() {
-        let config = crate::fixtures::config_de_test(
-            API_TELEGRAM_DEFAUT,
-            "postgres://compagnon:motdepasse@localhost:5432/compagnon",
-        );
+        let config = crate::fixtures::config_de_test(API_TELEGRAM_DEFAUT);
         let rendu = format!("{config:?}");
         println!("Debug rendu :\n  {rendu}");
 
