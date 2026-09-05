@@ -19,25 +19,27 @@
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
+
+use tracing::Level;
 
 use crate::error::{ApiError, ErrorCode};
 use crate::http::EtatApp;
 use crate::telegram::types::{Ecart, Update};
 
-/// Reçoit une mise à jour.
+/// Reçoit une mise à jour, déjà authentifiée.
+///
+/// L'authentification n'est **pas** faite ici mais dans une couche posée devant la route, et
+/// ce déplacement n'est pas cosmétique : axum exécute l'extracteur de corps ([`Bytes`], qui
+/// draine et collecte la requête) **avant** d'appeler le gestionnaire. Authentifier en
+/// première ligne du corps laissait donc n'importe qui, sur une adresse publique, imposer la
+/// lecture et l'allocation des 256 Kio de [`crate::http::TAILLE_MAX_CORPS`] sans présenter le
+/// moindre secret. La couche, elle, ne voit que les en-têtes et court-circuite avant.
 ///
 /// # Errors
 ///
-/// - [`ErrorCode::WebhookSecretInvalide`] si l'appel n'est pas authentifié ;
-/// - [`ErrorCode::Interne`] si la file est pleine — Telegram rejouera.
-pub async fn recevoir(
-    State(etat): State<EtatApp>,
-    entetes: HeaderMap,
-    corps: Bytes,
-) -> Result<StatusCode, ApiError> {
-    etat.canal.authentifier(&entetes)?;
-
+/// [`ErrorCode::FileSaturee`] si la file est pleine — Telegram rejouera.
+pub async fn recevoir(State(etat): State<EtatApp>, corps: Bytes) -> Result<StatusCode, ApiError> {
     let Some(update) = analyser(&corps) else {
         return Ok(StatusCode::OK);
     };
@@ -58,7 +60,7 @@ pub async fn recevoir(
         // La file pleine n'est pas une défaillance : c'est la contre-pression qui fonctionne.
         // Le `503` demande à Telegram de repasser, ce qu'il fait.
         ApiError::avec_source(
-            ErrorCode::Interne,
+            ErrorCode::FileSaturee,
             "file de traitement saturée, mise à jour non acceptée",
             source,
         )
@@ -68,25 +70,22 @@ pub async fn recevoir(
     Ok(StatusCode::OK)
 }
 
-/// Journalise un écart au bon niveau.
+/// Journalise un écart au niveau que l'écart lui-même porte.
 ///
-/// Un message de groupe ou un autocollant relèvent du fonctionnement normal ; une mise à jour
-/// sans message identifiable indique plutôt que `allowed_updates` laisse passer autre chose
-/// que ce qu'on croit, et mérite d'être vu sans activer le mode debug.
+/// Le niveau vient de [`Ecart::niveau`] et non d'un `match` écrit ici : un bras attrape-tout
+/// aurait fait tomber en silence toute variante ajoutée par une phase suivante — `voice` en
+/// phase 4 — dans `debug!`, où personne ne l'aurait vue. C'est le même mécanisme que
+/// [`ErrorCode::niveau`], et il n'y en a donc qu'un à connaître.
+///
+/// Aucun code d'erreur HTTP n'est joint : ces mises à jour reçoivent `200`, et accoler un code
+/// de réponse à une requête réussie ferait tomber deux situations sans rapport sous le même
+/// `grep`.
 fn journaliser_ecart(update_id: i64, ecart: Ecart) {
-    match ecart {
-        Ecart::SansMessage => tracing::info!(
-            update_id,
-            motif = ecart.libelle(),
-            "mise à jour sans message exploitable"
-        ),
-        Ecart::TexteDemesure => tracing::warn!(
-            update_id,
-            motif = ecart.libelle(),
-            code = ErrorCode::PayloadInattendu.code(),
-            "mise à jour écartée"
-        ),
-        _ => tracing::debug!(update_id, motif = ecart.libelle(), "mise à jour écartée"),
+    let motif = ecart.libelle();
+    match ecart.niveau() {
+        Level::WARN => tracing::warn!(update_id, motif, "mise à jour écartée"),
+        Level::INFO => tracing::info!(update_id, motif, "mise à jour écartée"),
+        _ => tracing::debug!(update_id, motif, "mise à jour écartée"),
     }
 }
 

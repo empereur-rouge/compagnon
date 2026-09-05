@@ -25,11 +25,12 @@ et les couches `tower`, qui sortiraient nues sans la couche d'enveloppe de `src/
 | 2004 | `RouteInconnue` | 404 | DEBUG | route inconnue |
 | 2005 | `MethodeNonAutorisee` | 405 | DEBUG | méthode non autorisée pour cette route |
 | 2006 | `CorpsTropVolumineux` | 413 | DEBUG | corps de requête trop volumineux |
+| 5001 | `FileSaturee` | 503 | WARN | requête refusée, réessayer plus tard |
 | 9001 | `Interne` | 503 | ERROR | erreur interne |
 | 9002 | `DelaiDepasse` | 503 | ERROR | délai de traitement dépassé |
 
 Tranches réservées pour les phases suivantes : `3xxx` état et règles métier, `4xxx`
-cryptographie et sécurité, `5xxx` ressources et quotas.
+cryptographie et sécurité, et le reste de `5xxx` pour les quotas.
 
 ## Règles
 
@@ -47,6 +48,22 @@ gagner du temps en intégration.
 **`9001` renvoie `503`, pas `500`.** La défaillance est presque toujours transitoire, et
 Telegram rejoue sur `5xx` — ce qui est le comportement voulu : le message d'un utilisateur ne
 doit pas disparaître parce que le disque était saturé une seconde.
+
+**`5001` n'est pas `9001`.** Une file pleine n'est pas une défaillance : c'est la
+contre-pression qui fonctionne. Les confondre sous `Interne` rendait le contrat public
+incapable de distinguer « le worker est saturé » de « le disque a lâché » — deux situations qui
+n'appellent pas la même réaction. Le statut reste `503` pour que Telegram rejoue ; un `429` le
+ferait abandonner selon sa propre politique.
+
+**La conformité n'est plus devinée.** La couche d'enveloppe reconnaissait une réponse déjà
+conforme à son `content-type` `application/json` — une heuristique qu'un futur gestionnaire
+renvoyant son propre `Json(...)` aurait démentie en silence. `ApiError` pose désormais un
+marqueur privé au crate dans les extensions de la réponse : sa présence ne peut venir que de
+lui, et la condition est vraie par construction.
+
+**Une panique reste dans le contrat.** `CatchPanicLayer` convertit une panique de gestionnaire
+en `9001` conforme. Sans lui, la connexion était coupée : Telegram voyait une réinitialisation
+au lieu d'un `5xx`, et rien n'était journalisé au format du contrat.
 
 **Le détail interne ne sort jamais.** `ApiError` porte un détail et sa chaîne de causes ; ils
 sont journalisés au moment de la conversion en réponse, et là seulement. Un test

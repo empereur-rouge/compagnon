@@ -648,17 +648,35 @@
 <script type="application/json" id="journeys-data">
 {
   "actors": [
-    { "id": "utilisateur", "name": "Utilisateur Telegram", "description": "Une personne qui écrit au bot depuis Telegram. En phase 0, elle reçoit un écho : aucun personnage n'est encore branché." },
-    { "id": "exploitant", "name": "Exploitant", "description": "Qui déploie l'instance et la maintient. En pratique aujourd'hui : le développeur. Demain, quiconque tient le VPS." }
+    {
+      "id": "utilisateur",
+      "name": "Utilisateur Telegram",
+      "description": "Une personne qui écrit au bot depuis Telegram. En phase 0, elle reçoit un écho : aucun personnage n'est encore branché."
+    },
+    {
+      "id": "exploitant",
+      "name": "Exploitant",
+      "description": "Qui déploie l'instance et la maintient. En pratique aujourd'hui : le développeur. Demain, quiconque tient le VPS."
+    }
   ],
-
   "categories": [
-    { "id": "deploiement", "title": "Mise en service" },
-    { "id": "conversation", "title": "Conversation" },
-    { "id": "ecartes", "title": "Chemins écartés" },
-    { "id": "incidents", "title": "Incidents" }
+    {
+      "id": "deploiement",
+      "title": "Mise en service"
+    },
+    {
+      "id": "conversation",
+      "title": "Conversation"
+    },
+    {
+      "id": "ecartes",
+      "title": "Chemins écartés"
+    },
+    {
+      "id": "incidents",
+      "title": "Incidents"
+    }
   ],
-
   "journeys": [
     {
       "id": "mettre-en-service",
@@ -763,7 +781,6 @@
         }
       ]
     },
-
     {
       "id": "premier-message",
       "title": "Écrit au bot pour la première fois",
@@ -841,7 +858,6 @@
         }
       ]
     },
-
     {
       "id": "reponse-longue",
       "title": "Reçoit une réponse plus longue que ce que Telegram accepte",
@@ -883,7 +899,6 @@
         }
       ]
     },
-
     {
       "id": "message-non-retenu",
       "title": "Envoie quelque chose que le service n'accepte pas",
@@ -938,7 +953,6 @@
         }
       ]
     },
-
     {
       "id": "bot-muet",
       "title": "Le bot cesse de répondre",
@@ -960,7 +974,7 @@
               "opportunity": "[Assumption] Faire remonter une rafale de 1001 comme une alerte, pas comme une ligne WARN parmi d'autres : c'est une signature de déploiement désaccordé, pas de bruit de fond Internet.",
               "evidence": "",
               "frontstage": "Aucune réponse. Rien ne signale l'échec côté utilisateur.",
-              "backstage": "Canal::authentifier refuse via egal_temps_constant. ApiError code 1001, statut 401, message « requête non authentifiée » — identique pour secret absent, vide ou erroné, pour que l'endpoint ne soit pas un oracle.",
+              "backstage": "La couche http::authentifier, posée devant la route, refuse via egal_temps_constant AVANT que le corps ne soit lu. ApiError code 1001, statut 401, message « requête non authentifiée » — identique pour secret absent, vide ou erroné, pour que l'endpoint ne soit pas un oracle.",
               "support": "src/telegram/mod.rs authentifier, src/error.rs ErrorCode::WebhookSecretInvalide."
             },
             {
@@ -991,7 +1005,7 @@
               "opportunity": "[Assumption] Au-delà d'un certain retard, répondre au contexte plutôt qu'au message : une réponse tardive hors sujet est pire qu'une réponse absente.",
               "evidence": "",
               "frontstage": "Réponse très différée.",
-              "backstage": "try_send échoue sur file pleine ; webhook::recevoir renvoie ApiError code 9001, statut 503. Telegram rejoue. La file est bornée à 256 places : non bornée, un afflux ferait grossir la mémoire jusqu'à l'arrêt brutal.",
+              "backstage": "try_send échoue sur file pleine ; webhook::recevoir renvoie ApiError code 5001 (FileSaturee), statut 503. Telegram rejoue. Un code de la tranche 5xxx et non 9xxx : une file pleine n'est pas une défaillance, et le contrat public doit permettre de les distinguer. La file est bornée à 256 places — non bornée, un afflux ferait grossir la mémoire jusqu'à l'arrêt brutal.",
               "support": "src/webhook.rs recevoir, src/worker.rs CAPACITE_FILE."
             },
             {
@@ -1011,7 +1025,6 @@
         }
       ]
     },
-
     {
       "id": "redeployer",
       "title": "Redéploie sans perdre de message",
@@ -1029,11 +1042,11 @@
               "doing": "Exécute `docker compose up --detach --build` : Docker envoie SIGTERM au conteneur courant.",
               "thinking": "[Assumption] Il y a des messages en cours de traitement — est-ce qu'ils passent à la trappe ?",
               "feeling": 3,
-              "pain": "[Assumption] L'extinction ordonnée vide la file, mais un `kill -9` ou une coupure de courant perd ce qu'elle contient : elle vit en mémoire. Limite connue et bornée, levée par la file en base de la phase 1.",
-              "opportunity": "[Assumption] Faire dire à la sonde combien de messages sont en attente, pour qu'un exploitant puisse choisir son moment.",
+              "pain": "[Assumption] Le vidage est désormais borné et son abandon journalisé, mais un kill -9 ou une coupure de courant perd toujours ce que la file contient : elle vit en mémoire. Limite connue et bornée de la phase 0, levée par la file en base de la phase 1.",
+              "opportunity": "[Assumption] Faire dire à la sonde combien de messages sont en attente, pour qu'un exploitant puisse choisir son moment de redéploiement.",
               "evidence": "",
               "frontstage": "Les journaux : « arrêt demandé », « vidage de la file », « worker arrêté, file vidée », « arrêt terminé ».",
-              "backstage": "app::signal_d_arret écoute SIGINT et SIGTERM. axum::serve termine les requêtes en cours, puis le routeur est relâché — ce qui ferme l'entrée de la file — puis worker::tourner draine jusqu'à ce que le canal soit vide, et seulement alors le processus rend la main.",
+              "backstage": "app::signal_d_arret écoute SIGINT et SIGTERM. axum::serve termine les requêtes en cours, puis le routeur est relâché — ce qui ferme l'entrée de la file — puis worker::tourner draine, sous une borne de DELAI_VIDAGE (25 s) alignée sur stop_grace_period (30 s). Un vidage interrompu est journalisé en ERROR au lieu d'être tranché en silence par SIGKILL.",
               "support": "src/app.rs signal_d_arret, Prepare::servir, src/worker.rs tourner."
             },
             {

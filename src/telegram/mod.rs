@@ -27,7 +27,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::error::{ApiError, ErrorCode};
-use envoi::{Action, ErreurEnvoi, Identite, MessageEnvoye, Reponse};
+use envoi::{Action, ErreurEnvoi, Identite, MessageEnvoye, Panne, Reponse};
 
 /// En-tête par lequel Telegram présente le secret partagé.
 const ENTETE_SECRET: &str = "x-telegram-bot-api-secret-token";
@@ -51,9 +51,12 @@ pub enum ErreurCanal {
 
 /// Le canal Telegram d'une instance.
 ///
-/// Ne dérive **pas** `Debug` : la racine contient le jeton, et un dérivé automatique le
-/// rendrait imprimable par accident.
-#[derive(Clone)]
+/// Ne dérive ni `Debug` ni `Clone`, et les deux omissions sont délibérées. `Debug` rendrait le
+/// jeton imprimable par accident. `Clone` serait pire à retardement : le canal est toujours
+/// partagé par [`std::sync::Arc`], et une dérivation `Clone` laisserait un jour quelqu'un
+/// écrire `canal: Canal` dans un état cloné à chaque requête — deux allocations de secret par
+/// message, sans qu'aucun compilateur ne proteste. Interdire la copie du secret vers les
+/// journaux tout en autorisant la copie de la structure entière n'aurait pas de sens.
 pub struct Canal {
     client: reqwest::Client,
     /// `<racine api>/bot<jeton>` — secret.
@@ -210,18 +213,24 @@ impl Canal {
             None => requete,
         };
 
-        let reponse = requete
-            .send()
-            .await
-            .map_err(|source| ErreurEnvoi::Reseau { methode, source })?;
+        let reponse = requete.send().await.map_err(|source| ErreurEnvoi::Reseau {
+            methode,
+            // `Panne::classer` prend la référence et n'en retient que la nature : l'URL,
+            // qui porte le jeton, meurt avec `source` à la fin de cette closure.
+            panne: Panne::classer(&source),
+        })?;
 
         // Le statut HTTP n'est pas consulté : Telegram décrit ses refus dans le corps, avec un
         // `error_code` plus précis que le statut. Lire le corps dans tous les cas donne une
         // erreur exploitable là où un `error_for_status` ne donnerait qu'un nombre.
-        let enveloppe: Reponse<R> = reponse
-            .json()
-            .await
-            .map_err(|source| ErreurEnvoi::Illisible { methode, source })?;
+        let enveloppe: Reponse<R> =
+            reponse
+                .json()
+                .await
+                .map_err(|source| ErreurEnvoi::Illisible {
+                    methode,
+                    panne: Panne::classer(&source),
+                })?;
 
         enveloppe.deplier(methode)
     }

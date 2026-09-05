@@ -56,16 +56,15 @@ async fn main() {
         // standard porte un résultat qu'on redirige souvent vers `jq`.
         ["sonde"] => {
             telemetry::init_vers_stderr();
-            executer(|config| async move { cli::sonde(&config).await }).await;
+            rendre_compte(cli::sonde(&config_ou_sortir()).await);
         }
         ["webhook", "declarer", url] => {
             telemetry::init_vers_stderr();
-            let url = (*url).to_owned();
-            executer(|config| async move { cli::declarer_webhook(&config, &url).await }).await;
+            rendre_compte(cli::declarer_webhook(&config_ou_sortir(), url).await);
         }
         ["webhook", "retirer"] => {
             telemetry::init_vers_stderr();
-            executer(|config| async move { cli::retirer_webhook(&config).await }).await;
+            rendre_compte(cli::retirer_webhook(&config_ou_sortir()).await);
         }
         _ => {
             eprint!("{USAGE}");
@@ -74,15 +73,33 @@ async fn main() {
     }
 }
 
-/// Sert, et sort en erreur si le démarrage échoue.
-async fn servir() {
-    let config = match Config::depuis_environnement() {
+/// Charge la configuration, ou sort en nommant la variable fautive.
+///
+/// Un seul endroit pour cette politique. Elle a été écrite deux fois — une version journalisant
+/// par `tracing::error!`, l'autre par `eprintln!` — alors que les commandes d'exploitation
+/// viennent précisément d'envoyer `tracing` sur l'erreur standard : le second contournait le
+/// mécanisme installé une ligne plus haut.
+fn config_ou_sortir() -> Config {
+    match Config::depuis_environnement() {
         Ok(config) => config,
         Err(erreur) => {
-            tracing::error!(%erreur, "configuration refusée, le service ne démarre pas");
+            tracing::error!(%erreur, "configuration refusée");
             std::process::exit(SORTIE_ERREUR);
         }
-    };
+    }
+}
+
+/// Sort en erreur si une commande d'exploitation a échoué.
+fn rendre_compte(resultat: Result<(), cli::ErreurCli>) {
+    if let Err(erreur) = resultat {
+        tracing::error!(%erreur, "commande échouée");
+        std::process::exit(SORTIE_ERREUR);
+    }
+}
+
+/// Sert, et sort en erreur si le démarrage échoue.
+async fn servir() {
+    let config = config_ou_sortir();
     tracing::info!(config = ?config, "configuration chargée");
 
     if let Err(erreur) = app::servir(&config, app::signal_d_arret()).await {
@@ -90,24 +107,4 @@ async fn servir() {
         std::process::exit(SORTIE_ERREUR);
     }
     tracing::info!("arrêt terminé");
-}
-
-/// Exécute une commande d'exploitation avec la configuration chargée.
-async fn executer<F, Fut>(commande: F)
-where
-    F: FnOnce(Config) -> Fut,
-    Fut: Future<Output = Result<(), cli::ErreurCli>>,
-{
-    let config = match Config::depuis_environnement() {
-        Ok(config) => config,
-        Err(erreur) => {
-            eprintln!("configuration refusée : {erreur}");
-            std::process::exit(SORTIE_ERREUR);
-        }
-    };
-
-    if let Err(erreur) = commande(config).await {
-        eprintln!("échec : {erreur}");
-        std::process::exit(SORTIE_ERREUR);
-    }
 }

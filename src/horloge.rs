@@ -1,11 +1,17 @@
 //! Le temps, lu en un seul endroit.
 //!
-//! Regrouper les deux appels ici n'est pas une coquetterie : le jour où un test devra figer
-//! l'heure — « trois jours sans nouvelles », « il est deux heures du matin », toute la logique
-//! d'état de relation de la phase 2 — il n'y aura qu'un point à détourner, et non un
+//! Regrouper la lecture ici n'est pas une coquetterie : le jour où un test devra figer l'heure
+//! — « trois jours sans nouvelles », « il est deux heures du matin », toute la logique d'état
+//! de relation de la phase 2 — il n'y aura qu'un point à détourner, et non un
 //! `SystemTime::now()` dispersé dans quinze modules.
+//!
+//! Le module n'expose **que** l'horloge murale. Un wrapper monotone y a figuré un temps sans
+//! aucun appelant : il annonçait une convention que le seul code mesurant des durées violait
+//! déjà, et une fonction libre rendant un `Instant` n'offre de toute façon aucun point
+//! d'injection — figer le temps demandera un trait ou un paramètre, pas un alias. Il
+//! réapparaîtra avec son premier consommateur réel.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Secondes écoulées depuis l'époque Unix.
 ///
@@ -20,13 +26,4 @@ pub fn maintenant() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
-
-/// Instant monotone, pour mesurer des durées.
-///
-/// Distinct de [`maintenant`] : l'horloge murale peut reculer (NTP, changement d'heure), un
-/// `Instant` non. Tout ce qui mesure « depuis combien de temps » utilise celui-ci.
-#[must_use]
-pub fn instant() -> Instant {
-    Instant::now()
 }

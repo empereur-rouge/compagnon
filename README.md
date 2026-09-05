@@ -28,7 +28,7 @@ cargo run -- sonde
 ## Vérifier
 
 ```bash
-cargo test --release -- --nocapture   # 24 tests unitaires + 7 de bout en bout
+cargo test --release -- --nocapture   # 25 unitaires + 12 de bout en bout + 1 doctest
 cargo clippy --all-targets            # zéro avertissement attendu
 cargo doc --no-deps --open            # zéro avertissement attendu
 ```
@@ -55,7 +55,9 @@ compagnon webhook retirer          retire le webhook
 | ✅ | découpage des réponses de plus de 4096 unités UTF-16 |
 | ✅ | file bornée à contre-pression : file pleine → `503` → Telegram rejoue |
 | ✅ | extinction ordonnée sans perte de ce qui a été accusé |
-| ✅ | codes d'erreur numériques stables, secrets bannis des journaux et du proxy |
+| ✅ | codes d'erreur numériques stables, honorés jusque sur une panique de gestionnaire |
+| ✅ | les deux secrets bannis des journaux, du proxy, et **du type des erreurs** |
+| ✅ | authentification du webhook **avant** que le corps ne soit lu |
 | ⬜ | base, personnages, moteur de dialogue — phase 1 |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |
@@ -71,8 +73,15 @@ machine à états de dialogue qu'un service piloté par modèle n'utilise pas, c
 centaines de dépendances transitives. L'API Bot est du JSON sur HTTPS.
 
 **Le jeton est dans l'URL.** L'API Bot ne s'authentifie pas par en-tête : le jeton est un
-segment du chemin. Toute URL est donc un secret — aucune n'atteint un journal, une erreur ou un
-`Debug`. Le corollaire vaut aussi pour le proxy, voir le [Caddyfile](Caddyfile).
+segment du chemin. Toute URL est donc un secret. Interdire aux erreurs d'en porter une n'a pas
+suffi tant que c'était une règle à tenir : `ErreurEnvoi` conservait un `reqwest::Error`, dont
+le `Display` imprime l'URL, et une coupure réseau écrivait le jeton dans les journaux. Le type
+n'a plus la **capacité** d'en porter une. Le corollaire vaut aussi pour le proxy, voir le
+[Caddyfile](Caddyfile).
+
+**L'authentification est une couche, pas une première ligne.** Axum lit le corps avant
+d'appeler le gestionnaire : authentifier dedans laissait n'importe qui imposer la lecture de
+256 Kio sans présenter de secret. Conséquence assumée : `GET /webhook` rend `401`, pas `405`.
 
 **Tête-à-tête uniquement.** Les messages de groupe sont écartés : répondre dans un groupe
 exposerait à tous une conversation intime et changerait la nature du produit.

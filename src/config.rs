@@ -67,7 +67,10 @@ pub enum ErreurConfig {
 /// [`fmt::Debug`] est écrit à la main et masque les deux secrets : une structure de
 /// configuration finit tôt ou tard dans un `tracing::debug!`, et un jeton de bot dans les
 /// journaux vaut une reprise complète du bot.
-#[derive(Clone)]
+///
+/// Ne dérive pas `Clone`, et l'omission est délibérée : la structure porte deux secrets, elle
+/// est lue une fois au démarrage, et rien n'a besoin d'en faire une copie. Une dérivation
+/// gratuite laisserait un jour quelqu'un en semer des exemplaires sur le tas.
 pub struct Config {
     /// Jeton donné par `@BotFather`. Secret.
     pub jeton_bot: String,
@@ -111,8 +114,13 @@ impl Config {
         // Une absence de `.env` n'est pas une erreur : c'est le cas normal en production.
         let _ = dotenvy::dotenv();
 
-        let jeton_bot = valider_jeton_bot(&lire("TELEGRAM_BOT_TOKEN")?)?;
-        let secret_webhook = valider_secret(&lire("TELEGRAM_SECRET_WEBHOOK")?)?;
+        // Les validateurs ne rendent pas la valeur : elle est déjà possédée ici. La rendre
+        // ferait une seconde copie du secret sur le tas, dans un module dont toute la thèse
+        // est qu'un secret ne se disperse pas.
+        let jeton_bot = lire("TELEGRAM_BOT_TOKEN")?;
+        valider_jeton_bot(&jeton_bot)?;
+        let secret_webhook = lire("TELEGRAM_SECRET_WEBHOOK")?;
+        valider_secret(&secret_webhook)?;
 
         let adresse_brute = lire_ou("ADRESSE_ECOUTE", ADRESSE_ECOUTE_DEFAUT);
         let adresse_ecoute =
@@ -160,12 +168,13 @@ fn lire(nom: &'static str) -> Result<String, ErreurConfig> {
     }
 }
 
-/// Lit une variable facultative, en retombant sur la valeur par défaut si elle est vide.
-fn lire_ou(nom: &str, defaut: &str) -> String {
-    match std::env::var(nom) {
-        Ok(valeur) if !valeur.trim().is_empty() => valeur.trim().to_owned(),
-        _ => defaut.to_owned(),
-    }
+/// Lit une variable facultative, en retombant sur la valeur par défaut si elle est absente.
+///
+/// Délègue à [`lire`] : « ce qu'est une variable renseignée » n'a ainsi qu'une définition. Les
+/// deux fonctions ont porté le même `match` recopié, ce qui aurait laissé la règle diverger en
+/// silence le jour où l'une des deux aurait changé de politique sur les espaces.
+fn lire_ou(nom: &'static str, defaut: &str) -> String {
+    lire(nom).unwrap_or_else(|_| defaut.to_owned())
 }
 
 /// Vérifie qu'un jeton a la forme `<chiffres>:<35 caractères>` de `@BotFather`.
@@ -173,7 +182,7 @@ fn lire_ou(nom: &str, defaut: &str) -> String {
 /// Le contrôle est une forme, pas une preuve : seul l'appel à `getMe` au démarrage prouve que
 /// le jeton est valide. Il attrape la faute la plus fréquente — une valeur d'exemple laissée
 /// en place, ou un jeton tronqué au copier-coller.
-fn valider_jeton_bot(brut: &str) -> Result<String, ErreurConfig> {
+fn valider_jeton_bot(brut: &str) -> Result<(), ErreurConfig> {
     let invalide = |raison: &str| ErreurConfig::Invalide {
         variable: "TELEGRAM_BOT_TOKEN",
         raison: raison.to_owned(),
@@ -203,12 +212,12 @@ fn valider_jeton_bot(brut: &str) -> Result<String, ErreurConfig> {
             "la partie secrète contient un caractère hors de [A-Za-z0-9_-]",
         ));
     }
-    Ok(brut.to_owned())
+    Ok(())
 }
 
 /// Vérifie que le secret de webhook respecte le jeu de caractères de Telegram et notre plancher
 /// d'entropie.
-fn valider_secret(brut: &str) -> Result<String, ErreurConfig> {
+fn valider_secret(brut: &str) -> Result<(), ErreurConfig> {
     let invalide = |raison: String| ErreurConfig::Invalide {
         variable: "TELEGRAM_SECRET_WEBHOOK",
         raison,
@@ -234,7 +243,7 @@ fn valider_secret(brut: &str) -> Result<String, ErreurConfig> {
             "Telegram n'accepte que [A-Za-z0-9_-] dans ce secret".to_owned(),
         ));
     }
-    Ok(brut.to_owned())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -250,9 +259,9 @@ mod tests {
     fn un_jeton_bien_forme_passe_et_livre_son_identifiant() {
         println!("jeton d'essai : {JETON_EXEMPLE}");
         println!("  partie secrète : {} caractères", JETON_EXEMPLE.len() - 10);
-        let valide = valider_jeton_bot(JETON_EXEMPLE).expect("ce jeton doit être accepté");
+        valider_jeton_bot(JETON_EXEMPLE).expect("ce jeton doit être accepté");
         let config = Config {
-            jeton_bot: valide,
+            jeton_bot: JETON_EXEMPLE.to_owned(),
             secret_webhook: SECRET_EXEMPLE.to_owned(),
             adresse_ecoute: ADRESSE_ECOUTE_DEFAUT.parse().expect("adresse par défaut"),
             api_telegram: API_TELEGRAM_DEFAUT.to_owned(),
@@ -300,11 +309,11 @@ mod tests {
             println!("{attendu:32} -> {erreur}");
             assert!(!erreur.to_string().contains(brut));
         }
-        let accepte = valider_secret(SECRET_EXEMPLE).expect("celui-ci doit passer");
+        valider_secret(SECRET_EXEMPLE).expect("celui-ci doit passer");
         println!(
             "{:32} -> accepté ({} caractères)",
             "secret conforme",
-            accepte.len()
+            SECRET_EXEMPLE.len()
         );
     }
 

@@ -23,6 +23,7 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use tokio::net::TcpListener;
@@ -32,9 +33,17 @@ use tokio::task::JoinHandle;
 use crate::config::Config;
 use crate::horloge;
 use crate::http::{self, EtatApp};
-use crate::telegram::envoi::{ErreurEnvoi, Identite};
+use crate::telegram::envoi::ErreurEnvoi;
 use crate::telegram::{Canal, ErreurCanal};
 use crate::worker::{self, CAPACITE_FILE};
+
+/// Délai au-delà duquel le vidage de la file est abandonné à l'extinction.
+///
+/// **Ce nombre est lié à `stop_grace_period` dans `compose.yaml`** : Docker envoie `SIGKILL`
+/// passé son propre sursis, et un vidage plus long que lui serait tranché sans un mot. Les deux
+/// valeurs doivent bouger ensemble ; celle-ci est prise en dessous pour que l'abandon soit
+/// journalisé par le service plutôt que constaté par son absence.
+const DELAI_VIDAGE: Duration = Duration::from_secs(25);
 
 /// Ce qui a empêché le service de démarrer ou de servir.
 #[derive(Debug, thiserror::Error)]
@@ -71,8 +80,6 @@ pub enum ErreurDemarrage {
 pub struct Prepare {
     /// L'adresse réellement obtenue, port éphémère résolu.
     pub adresse: SocketAddr,
-    /// Qui Telegram dit que ce bot est.
-    pub identite: Identite,
     ecoute: TcpListener,
     routeur: Router,
     worker: JoinHandle<()>,
@@ -95,26 +102,32 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
         "jeton validé par Telegram"
     );
 
-    let (expediteur, reception) = mpsc::channel(CAPACITE_FILE);
-    let worker = tokio::spawn(worker::tourner(reception, Arc::clone(&canal)));
-
-    let etat = EtatApp::new(canal, expediteur, horloge::maintenant());
-    let routeur = http::routeur(etat);
-
-    let ecoute = TcpListener::bind(config.adresse_ecoute)
-        .await
-        .map_err(|source| ErreurDemarrage::Ecoute {
-            adresse: config.adresse_ecoute,
-            source,
-        })?;
-    let adresse = http::adresse_liee(&ecoute).map_err(|source| ErreurDemarrage::Ecoute {
+    // L'écoute est prise AVANT le lancement du worker : tout ce qui peut échouer d'abord,
+    // tout ce qui démarre ensuite. Dans l'ordre inverse, un `bind` refusé laissait une tâche
+    // détachée derrière lui — elle sortait d'elle-même, mais par la mécanique des `drop`
+    // plutôt que par intention, et il fallait le démontrer pour s'en convaincre.
+    let echec = |source| ErreurDemarrage::Ecoute {
         adresse: config.adresse_ecoute,
         source,
-    })?;
+    };
+    let ecoute = TcpListener::bind(config.adresse_ecoute)
+        .await
+        .map_err(echec)?;
+    // L'adresse effective, et non celle demandée : lier sur le port zéro donne un port
+    // éphémère que seul le système connaît, et c'est celui-là qu'il faut annoncer.
+    let adresse = ecoute.local_addr().map_err(echec)?;
+
+    let (expediteur, reception) = mpsc::channel(CAPACITE_FILE);
+    let worker = tokio::spawn(worker::tourner(reception, canal.clone()));
+
+    let routeur = http::routeur(EtatApp {
+        canal,
+        expediteur,
+        demarre_le: horloge::maintenant(),
+    });
 
     Ok(Prepare {
         adresse,
-        identite,
         ecoute,
         routeur,
         worker,
@@ -136,7 +149,6 @@ impl Prepare {
             ecoute,
             routeur,
             worker,
-            ..
         } = self;
 
         tracing::info!(%adresse, version = crate::VERSION, "service à l'écoute");
@@ -149,9 +161,19 @@ impl Prepare {
             .with_graceful_shutdown(arret)
             .await;
 
-        tracing::info!("plus de requête en cours, vidage de la file");
-        if let Err(erreur) = worker.await {
-            tracing::error!(%erreur, "le worker s'est interrompu anormalement");
+        tracing::info!(delai_max = ?DELAI_VIDAGE, "plus de requête en cours, vidage de la file");
+        match tokio::time::timeout(DELAI_VIDAGE, worker).await {
+            Ok(Ok(())) => tracing::info!("file vidée, arrêt propre"),
+            Ok(Err(erreur)) => tracing::error!(%erreur, "le worker s'est interrompu anormalement"),
+            // Le vidage était auparavant NON borné, alors que chaque `sendMessage` a son
+            // propre délai de 15 s : une file pleine face à un Telegram lent pouvait demander
+            // une heure, très au-delà du sursis que Docker accorde. La garantie « ce qui a été
+            // accusé est traité » était donc déjà tronquée en production, et personne ne le
+            // voyait. Bornée, la troncature devient un échec bruyant et daté.
+            Err(_) => tracing::error!(
+                delai = ?DELAI_VIDAGE,
+                "vidage interrompu : des messages acceptés n'ont pas été traités"
+            ),
         }
 
         resultat.map_err(ErreurDemarrage::Service)

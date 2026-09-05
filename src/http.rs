@@ -8,30 +8,29 @@
 //! ailleurs tomberait alors sur une réponse vide, ce qui est précisément ce qu'un contrat est
 //! censé empêcher. Une couche de ce module les rhabille avant qu'elles ne sortent.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::Request;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::sync::mpsc;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::VERSION;
-use crate::error::{CorpsErreur, ErrorCode};
+use crate::error::{ApiError, CorpsErreur, DejaConforme, ErrorCode};
 use crate::horloge;
 use crate::telegram::Canal;
 use crate::telegram::types::Recu;
 use crate::webhook;
-use crate::worker::CAPACITE_FILE;
 
 /// Taille maximale d'un corps de requête.
 ///
@@ -59,27 +58,25 @@ pub struct EtatApp {
     pub demarre_le: i64,
 }
 
-impl EtatApp {
-    /// Assemble l'état.
-    #[must_use]
-    pub const fn new(canal: Arc<Canal>, expediteur: mpsc::Sender<Recu>, demarre_le: i64) -> Self {
-        Self {
-            canal,
-            expediteur,
-            demarre_le,
-        }
-    }
-}
-
 /// Construit le routeur complet, couches comprises.
 ///
 /// L'ordre des couches se lit de bas en haut à l'arrivée d'une requête : la trace est posée en
 /// premier, l'enveloppe d'erreur ensuite, puis la limite de taille, puis le délai. La limite
 /// vient avant le délai pour qu'un corps démesuré soit refusé sans consommer le délai imparti.
 pub fn routeur(etat: EtatApp) -> Router {
+    let webhook = Router::new()
+        .route("/webhook", post(webhook::recevoir))
+        // `route_layer` et non `layer` : la couche ne doit s'appliquer qu'à une route qui
+        // existe. Posée en `layer`, un `POST /nimporte-quoi` exigerait un secret avant de
+        // recevoir son 404, et l'endpoint deviendrait un moyen de distinguer les routes.
+        .route_layer(axum::middleware::from_fn_with_state(
+            etat.clone(),
+            authentifier,
+        ));
+
     Router::new()
         .route("/health", get(sante))
-        .route("/webhook", post(webhook::recevoir))
+        .merge(webhook)
         .with_state(etat)
         .layer(TimeoutLayer::with_status_code(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -87,7 +84,41 @@ pub fn routeur(etat: EtatApp) -> Router {
         ))
         .layer(RequestBodyLimitLayer::new(TAILLE_MAX_CORPS))
         .layer(axum::middleware::from_fn(enveloppe_erreur))
+        // Dernier rempart du contrat d'erreur. Sans lui, une panique dans un gestionnaire
+        // coupe la connexion : Telegram voit une réinitialisation au lieu d'un 5xx conforme,
+        // et rien n'est journalisé au format du contrat. Les lints `panic` et `unwrap_used`
+        // sont à `warn` et non à `deny` — le cas est possible, pas hypothétique.
+        .layer(CatchPanicLayer::custom(|_| {
+            tracing::error!(
+                code = ErrorCode::Interne.code(),
+                "panique dans un gestionnaire, connexion préservée"
+            );
+            ApiError::new(ErrorCode::Interne, "panique dans un gestionnaire").into_response()
+        }))
         .layer(TraceLayer::new_for_http().make_span_with(span_requete))
+}
+
+/// Vérifie que l'appel vient de Telegram, **avant** que le corps ne soit lu.
+///
+/// Posée en couche et non en première ligne du gestionnaire, pour une raison de fond : axum
+/// exécute les extracteurs — dont [`axum::body::Bytes`], qui draine et collecte la requête —
+/// puis seulement appelle le gestionnaire. Authentifier dans le corps laissait donc n'importe
+/// qui imposer la lecture et l'allocation de [`TAILLE_MAX_CORPS`] sans présenter le moindre
+/// secret, sur une adresse publique. Une couche ne voit que les en-têtes et court-circuite
+/// avant — ce qui supprime au passage le clone intégral de la table d'en-têtes que
+/// l'extracteur `HeaderMap` imposait à chaque requête.
+///
+/// # Errors
+///
+/// [`ErrorCode::WebhookSecretInvalide`] si le secret est absent, vide ou erroné — les trois
+/// cas rendant le même code et le même message.
+async fn authentifier(
+    State(etat): State<EtatApp>,
+    requete: Request,
+    suite: Next,
+) -> Result<Response, ApiError> {
+    etat.canal.authentifier(requete.headers())?;
+    Ok(suite.run(requete).await)
 }
 
 /// Le span posé sur chaque requête.
@@ -110,13 +141,11 @@ async fn enveloppe_erreur(requete: Request, suite: Next) -> Response {
         return reponse;
     }
 
-    // Une réponse déjà JSON vient d'un `ApiError` : elle porte le bon code, ne pas la refaire.
-    let deja_json = reponse
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|valeur| valeur.to_str().ok())
-        .is_some_and(|valeur| valeur.starts_with("application/json"));
-    if deja_json {
+    // Le marqueur ne peut venir que d'un `ApiError`, qui ne sait produire qu'un corps
+    // conforme. Renifler le `content-type` supposait qu'une réponse JSON est forcément
+    // conforme — supposition qu'un futur gestionnaire renvoyant son propre `Json(...)`
+    // aurait démentie en silence, sans qu'aucune ligne de code ne l'arrête.
+    if reponse.extensions().get::<DejaConforme>().is_some() {
         return reponse;
     }
 
@@ -137,6 +166,8 @@ const fn code_pour_statut(statut: StatusCode) -> ErrorCode {
         StatusCode::NOT_FOUND => ErrorCode::RouteInconnue,
         StatusCode::METHOD_NOT_ALLOWED => ErrorCode::MethodeNonAutorisee,
         StatusCode::PAYLOAD_TOO_LARGE => ErrorCode::CorpsTropVolumineux,
+        // Seules les couches `tower` produisent un 503 nu ; la file saturée passe par un
+        // `ApiError` qui porte déjà `FileSaturee` et n'atteint donc jamais cette table.
         StatusCode::SERVICE_UNAVAILABLE => ErrorCode::DelaiDepasse,
         _ => ErrorCode::Interne,
     }
@@ -160,6 +191,10 @@ pub struct Sante {
     /// que cette sonde puisse porter.
     pub file_libre: usize,
     /// Capacité totale de la file, pour situer `file_libre`.
+    ///
+    /// Lue sur le canal et non sur la constante : les deux chiffres viennent ainsi de la même
+    /// source. Recopier la constante ferait mentir la sonde le jour où le canal serait
+    /// construit avec une autre taille, sans que rien ne le signale.
     pub file_capacite: usize,
 }
 
@@ -170,18 +205,6 @@ async fn sante(State(etat): State<EtatApp>) -> Json<Sante> {
         version: VERSION,
         depuis: horloge::maintenant() - etat.demarre_le,
         file_libre: etat.expediteur.capacity(),
-        file_capacite: CAPACITE_FILE,
+        file_capacite: etat.expediteur.max_capacity(),
     })
-}
-
-/// L'adresse effective sur laquelle un écouteur est lié.
-///
-/// Passe par une fonction plutôt que par un champ recopié : lier sur le port `0` donne un port
-/// éphémère que seul le système connaît, et c'est celui-là que les tests doivent joindre.
-///
-/// # Errors
-///
-/// Renvoie l'erreur d'entrée-sortie si l'écouteur ne sait pas dire son adresse.
-pub fn adresse_liee(ecoute: &tokio::net::TcpListener) -> std::io::Result<SocketAddr> {
-    ecoute.local_addr()
 }

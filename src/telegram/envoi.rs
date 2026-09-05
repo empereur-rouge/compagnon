@@ -23,12 +23,13 @@ use serde::{Deserialize, Serialize};
 /// Longueur maximale d'un message sortant, en unités UTF-16. Limite de Telegram.
 pub const LIMITE_TEXTE: usize = 4096;
 
-/// Proportion du morceau qu'on accepte de sacrifier pour couper proprement.
+/// Diviseur fixant la part du morceau qu'on accepte de sacrifier pour couper proprement : le
+/// recul est plafonné à `1 / DIVISEUR_RECUL` de sa longueur.
 ///
 /// Reculer jusqu'à la dernière espace est souhaitable ; reculer de 3000 caractères pour la
 /// trouver ne l'est pas — cela produirait un message ridiculement court suivi d'un autre
 /// démesuré. Au-delà de ce recul, on coupe net.
-const RECUL_MAX: usize = 4;
+const DIVISEUR_RECUL: usize = 4;
 
 /// Ce que le bot fait mine de faire pendant qu'il prépare sa réponse.
 ///
@@ -46,18 +47,89 @@ pub enum Action {
     RecordVoice,
 }
 
+/// Ce qui a fait échouer un appel réseau, classé de telle sorte qu'aucune URL ne puisse suivre.
+///
+/// # Pourquoi un énuméré et non le `reqwest::Error`
+///
+/// Le jeton du bot est un segment de l'URL. Or `reqwest::Error` **transporte** l'URL, et son
+/// `Display` comme son `Debug` l'impriment — le crate le documente lui-même et offre un
+/// `without_url()` pour cette raison. Conserver la cause telle quelle et se promettre de ne
+/// jamais la journaliser est exactement la forme de garantie qui a déjà échoué ici : le module
+/// affirmait « aucune URL n'atteint un journal » pendant que `worker::traiter` écrivait
+/// `%erreur` sur chaque envoi manqué, jeton compris, dans des journaux que `compose.yaml`
+/// persiste sur disque.
+///
+/// La classification retire au type la **capacité** de porter une URL. Ce n'est plus une règle
+/// à tenir, c'est une propriété que le compilateur garantit — y compris pour tout parcours de
+/// `source()`, comme celui d'[`crate::error::ApiError::diagnostic`].
+///
+/// Ce qu'on perd : le détail de la cause système (« connection refused » plutôt que
+/// « connexion impossible »). Ce qu'on garde : de quoi décider s'il faut réessayer, ce qui est
+/// la seule chose dont le code se sert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panne {
+    /// L'appel n'a pas abouti dans le délai imparti.
+    Delai,
+    /// La connexion n'a pas pu être établie : DNS, refus, TLS.
+    Connexion,
+    /// La réponse est arrivée mais n'a pas pu être lue.
+    Corps,
+    /// La requête elle-même n'a pas pu être formée ou émise.
+    Requete,
+    /// Rien de ce qui précède.
+    Autre,
+}
+
+impl Panne {
+    /// Classe une erreur `reqwest`, sans en retenir autre chose que sa nature.
+    ///
+    /// Prend la référence et ne la conserve pas : c'est ce qui garantit que l'URL ne survit
+    /// pas à l'appel.
+    pub(super) fn classer(erreur: &reqwest::Error) -> Self {
+        if erreur.is_timeout() {
+            Self::Delai
+        } else if erreur.is_connect() {
+            Self::Connexion
+        } else if erreur.is_decode() || erreur.is_body() {
+            Self::Corps
+        } else if erreur.is_request() {
+            Self::Requete
+        } else {
+            Self::Autre
+        }
+    }
+
+    /// Libellé lisible en journal.
+    #[must_use]
+    pub const fn libelle(self) -> &'static str {
+        match self {
+            Self::Delai => "délai dépassé",
+            Self::Connexion => "connexion impossible",
+            Self::Corps => "réponse illisible",
+            Self::Requete => "requête non émise",
+            Self::Autre => "cause indéterminée",
+        }
+    }
+}
+
+impl std::fmt::Display for Panne {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.libelle())
+    }
+}
+
 /// Ce qui a empêché un envoi d'aboutir.
+///
+/// Aucune variante ne porte d'URL, et aucune ne peut en porter : voir [`Panne`].
 #[derive(Debug, thiserror::Error)]
 pub enum ErreurEnvoi {
     /// La requête n'a pas abouti : réseau, TLS, délai dépassé.
-    ///
-    /// L'URL n'apparaît jamais dans ce message : elle contient le jeton du bot.
-    #[error("appel « {methode} » impossible : {source}")]
+    #[error("appel « {methode} » impossible : {panne}")]
     Reseau {
         /// La méthode Bot API visée, seul élément d'identification qu'on journalise.
         methode: &'static str,
-        /// La cause côté client.
-        source: reqwest::Error,
+        /// La nature de la panne.
+        panne: Panne,
     },
 
     /// Telegram a répondu, et a refusé.
@@ -74,12 +146,12 @@ pub enum ErreurEnvoi {
     },
 
     /// Telegram a répondu quelque chose d'inattendu.
-    #[error("réponse de « {methode} » illisible : {source}")]
+    #[error("réponse de « {methode} » illisible : {panne}")]
     Illisible {
         /// La méthode Bot API visée.
         methode: &'static str,
-        /// La cause de la lecture manquée.
-        source: reqwest::Error,
+        /// La nature de la panne.
+        panne: Panne,
     },
 }
 
@@ -92,11 +164,10 @@ impl ErreurEnvoi {
     #[must_use]
     pub const fn merite_une_reprise(&self) -> bool {
         match self {
-            // Réseau, TLS, délai : l'appel n'a pas abouti, l'état distant est inchangé.
-            Self::Reseau { .. } => true,
-            // Une réponse illisible vient d'un intermédiaire (portail captif, proxy) plutôt
-            // que de Telegram : c'est transitoire.
-            Self::Illisible { .. } => true,
+            // L'appel n'a pas abouti : l'état distant est inchangé, réessayer a un sens.
+            // Une réponse illisible vient plus souvent d'un intermédiaire — portail captif,
+            // proxy — que de Telegram lui-même.
+            Self::Reseau { .. } | Self::Illisible { .. } => true,
             Self::Api { code, .. } => match *code {
                 // Débit dépassé : c'est précisément le cas qui demande une reprise différée.
                 429 => true,
@@ -168,7 +239,7 @@ pub struct Identite {
 }
 
 /// Le message renvoyé par Telegram après un envoi réussi.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct MessageEnvoye {
     /// Identifiant du message créé.
     pub message_id: i64,
@@ -181,7 +252,7 @@ pub struct MessageEnvoye {
 /// par Telegram.
 #[must_use]
 pub fn longueur_utf16(texte: &str) -> usize {
-    texte.chars().map(char::len_utf16).sum()
+    texte.encode_utf16().count()
 }
 
 /// Découpe un texte en morceaux qu'un `sendMessage` accepte.
@@ -207,7 +278,16 @@ pub fn decouper(texte: &str, limite: usize) -> Vec<&str> {
     let mut reste = texte.trim();
 
     while !reste.is_empty() {
-        if longueur_utf16(reste) <= limite {
+        // Court-circuit en O(1) : la longueur UTF-16 est toujours inférieure ou égale à la
+        // longueur en octets UTF-8 (1 octet → 1 unité, 2 → 1, 3 → 1, 4 → 2). Un texte qui
+        // tient en octets tient donc en unités, sans avoir à compter.
+        //
+        // Ce n'est pas une micro-optimisation : sans lui, `longueur_utf16(reste)` reparcourt
+        // tout le reste à chaque tour, ce qui rend la boucle quadratique. Mesuré sur un texte
+        // de 4,5 millions d'unités : 1,19 s contre 3,4 ms. Sans effet en phase 0, où l'entrant
+        // est plafonné à 4096 — mais la sortie du modèle de la phase 1 ne le sera pas, et le
+        // worker est à consommateur unique : le temps passé ici bloque toute la file.
+        if reste.len() <= limite || longueur_utf16(reste) <= limite {
             morceaux.push(reste);
             break;
         }
@@ -248,9 +328,13 @@ pub fn decouper(texte: &str, limite: usize) -> Vec<&str> {
 /// Choisit où couper dans un préfixe qui tient déjà dans la limite.
 ///
 /// Recule jusqu'au dernier saut de ligne, sinon jusqu'à la dernière espace, tant que le recul
-/// ne dépasse pas [`RECUL_MAX`] du préfixe. Sinon coupe au bout.
+/// ne dépasse pas la part fixée par [`DIVISEUR_RECUL`]. Sinon coupe au bout.
+///
+/// Le plancher se calcule en octets et non en unités UTF-16 : c'est une heuristique de
+/// confort, pas une limite de protocole, et une frontière de mot approximative à quelques
+/// octets près ne change rien à ce qu'on lit.
 fn point_de_coupe(prefixe: &str) -> usize {
-    let plancher = prefixe.len() - prefixe.len() / RECUL_MAX;
+    let plancher = prefixe.len() - prefixe.len() / DIVISEUR_RECUL;
     for separateur in ['\n', ' '] {
         if let Some(index) = prefixe.rfind(separateur)
             && index >= plancher

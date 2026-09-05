@@ -14,11 +14,8 @@ use harnais::{FauxTelegram, update_privee};
 #[tokio::test]
 async fn un_message_prive_traverse_tout_le_circuit_et_revient_en_echo() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
-    println!(
-        "service à l'écoute sur {}, bot « {} »",
-        service.adresse, service.bot
-    );
+    let service = harnais::demarrer(&faux).await;
+    println!("service à l'écoute sur {}", service.adresse);
 
     let reponse = service
         .poster(&update_privee(900_001, "salut, tu fais quoi ?"))
@@ -59,7 +56,7 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_en_echo() {
 #[tokio::test]
 async fn un_secret_errone_est_refuse_sans_qu_un_seul_octet_parte_chez_telegram() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     let cas = [
         (
@@ -110,7 +107,7 @@ async fn un_secret_errone_est_refuse_sans_qu_un_seul_octet_parte_chez_telegram()
 #[tokio::test]
 async fn un_corps_illisible_est_absorbe_sans_ouvrir_de_boucle_de_rejeu() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     // Telegram rejoue tout ce qui n'est pas 2xx. Un corps qu'on ne saura jamais lire doit
     // donc être absorbé, pas refusé.
@@ -156,7 +153,7 @@ async fn un_corps_illisible_est_absorbe_sans_ouvrir_de_boucle_de_rejeu() {
 #[tokio::test]
 async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     // L'entrant est plafonné à 4096 unités UTF-16 — au-delà, il est écarté avant la file.
     // C'est donc l'**enrobage** de la réponse qui fait franchir la limite : un message
@@ -170,7 +167,7 @@ async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     let long: String = motif.chars().cycle().take(4096).collect();
     println!(
         "message entrant : {} unités UTF-16 (plafond entrant : 4096)",
-        long.chars().map(char::len_utf16).sum::<usize>()
+        harnais::longueur_utf16(&long)
     );
 
     let reponse = service.poster(&update_privee(900_005, &long)).await;
@@ -180,7 +177,7 @@ async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     println!("réponse découpée en {} messages :", messages.len());
     for (rang, message) in messages.iter().enumerate() {
         let texte = message["text"].as_str().unwrap_or_default();
-        let unites: usize = texte.chars().map(char::len_utf16).sum();
+        let unites = harnais::longueur_utf16(texte);
         println!("  {rang} : {unites} unités UTF-16");
         assert!(
             unites <= 4096,
@@ -195,7 +192,7 @@ async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
 #[tokio::test]
 async fn l_extinction_ordonnee_traite_tout_ce_qui_avait_ete_accepte() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     // Le point délicat : le service accepte, répond 200, puis on l'éteint immédiatement. Rien
     // ne doit disparaître — c'est la garantie que la file en mémoire ne perd pas ce qu'elle a
@@ -245,7 +242,7 @@ async fn l_extinction_ordonnee_traite_tout_ce_qui_avait_ete_accepte() {
 #[tokio::test]
 async fn le_contrat_d_erreur_vaut_aussi_pour_les_reponses_du_routeur() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     // Ces réponses ne viennent pas d'un gestionnaire : elles sortiraient nues sans la couche
     // d'enveloppe. Un client qui lit `{"code":...}` partout ailleurs tomberait sur du vide.
@@ -256,10 +253,12 @@ async fn le_contrat_d_erreur_vaut_aussi_pour_les_reponses_du_routeur() {
     assert_eq!(statut, 404);
     assert_eq!(corps["code"], 2004);
 
-    let reponse = service.obtenir("/webhook").await;
+    // `POST /health` : la route existe, la méthode non, et aucune authentification ne la
+    // protège — c'est donc là que le 405 reste observable.
+    let reponse = service.poster_sur("/health").await;
     let statut = reponse.status();
     let corps: serde_json::Value = reponse.json().await.expect("même une 405 est du JSON");
-    println!("GET /webhook                -> {statut} {corps}");
+    println!("POST /health                -> {statut} {corps}");
     assert_eq!(statut, 405);
     assert_eq!(corps["code"], 2005);
 
@@ -267,9 +266,32 @@ async fn le_contrat_d_erreur_vaut_aussi_pour_les_reponses_du_routeur() {
 }
 
 #[tokio::test]
+async fn une_methode_non_autorisee_sur_le_webhook_repond_d_abord_non_authentifiee() {
+    let faux = FauxTelegram::demarrer().await;
+    let service = harnais::demarrer(&faux).await;
+
+    // Choix délibéré, et conséquence du déplacement de l'authentification en couche : elle
+    // s'exécute avant que le routeur ne constate que la méthode ne convient pas. Un appelant
+    // sans secret n'apprend donc pas quelles méthodes /webhook accepte — ce qui prolonge la
+    // règle déjà tenue sur les trois modes d'échec du secret : ne rien dire de plus que
+    // « non authentifié ».
+    let reponse = service.obtenir("/webhook").await;
+    let statut = reponse.status();
+    let corps: serde_json::Value = reponse.json().await.expect("le refus est du JSON");
+    println!("GET /webhook (sans secret)  -> {statut} {corps}");
+    assert_eq!(
+        statut, 401,
+        "l'authentification doit précéder le routage de méthode"
+    );
+    assert_eq!(corps["code"], 1001);
+
+    service.eteindre().await;
+}
+
+#[tokio::test]
 async fn la_sonde_dit_la_version_et_l_etat_de_la_file() {
     let faux = FauxTelegram::demarrer().await;
-    let mut service = harnais::demarrer(&faux).await;
+    let service = harnais::demarrer(&faux).await;
 
     let sante = service.sante().await;
     println!("GET /health -> {sante}");
@@ -281,4 +303,55 @@ async fn la_sonde_dit_la_version_et_l_etat_de_la_file() {
     );
 
     service.eteindre().await;
+}
+
+#[tokio::test]
+async fn un_appel_non_authentifie_est_refuse_avant_que_son_corps_ne_soit_lu() {
+    let faux = FauxTelegram::demarrer().await;
+    let service = harnais::demarrer(&faux).await;
+
+    // Ce qui est vérifié n'est pas le statut mais l'ORDRE des opérations.
+    //
+    // Axum exécute les extracteurs — dont `Bytes`, qui draine et collecte la requête — puis
+    // seulement appelle le gestionnaire. Tant que l'authentification était la première ligne
+    // du gestionnaire, elle arrivait donc APRÈS la lecture du corps : n'importe qui, sur une
+    // adresse publique, imposait la lecture et l'allocation de TAILLE_MAX_CORPS sans présenter
+    // le moindre secret.
+    //
+    // Une requête ordinaire ne distingue pas les deux ordres — le refus est identique. On
+    // annonce donc un corps qu'on n'envoie jamais :
+    //   - corps lu en premier   -> le service attend, et ne répond qu'à l'expiration du délai
+    //                              de requête (5 s) ;
+    //   - secret vérifié d'abord -> réponse immédiate, le corps n'est jamais touché.
+    let patience = std::time::Duration::from_secs(3);
+    let (statut, ecoule) = service
+        .annoncer_un_corps_sans_l_envoyer(
+            200_000,
+            "un-mauvais-secret-de-quarante-huit-caracteres-ab",
+            patience,
+        )
+        .await;
+    println!("corps annoncé jamais envoyé, mauvais secret -> {statut:?} en {ecoule:?}");
+
+    let statut = statut.expect(
+        "aucune réponse avant l'expiration : le service attendait le corps, donc il le lisait \
+         avant d'authentifier",
+    );
+    assert!(statut.contains("401"), "réponse inattendue : {statut}");
+    assert!(
+        ecoule < patience,
+        "le refus a mis {ecoule:?} : le corps a été attendu avant l'authentification"
+    );
+
+    // Contrôle inverse : la protection de taille n'a pas été perdue en déplaçant
+    // l'authentification. Avec le bon secret, un corps au-delà de la limite est bien refusé.
+    let reponse = service.poster_volumineux(300 * 1024, harnais::SECRET).await;
+    let code = reponse.status();
+    let corps: serde_json::Value = reponse.json().await.expect("le refus est du JSON");
+    println!("corps de 300 Kio, bon secret                -> {code} {corps}");
+    assert_eq!(code, 413, "la limite de taille doit toujours mordre");
+    assert_eq!(corps["code"], 2006);
+
+    service.eteindre().await;
+    println!("\nl'authentification précède la lecture du corps, et la limite tient toujours");
 }

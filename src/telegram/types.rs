@@ -15,12 +15,21 @@
 //! message a bien un auteur.
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
+use tracing::Level;
+
+use super::envoi::longueur_utf16;
 
 /// Longueur maximale d'un texte entrant, en unités UTF-16.
 ///
 /// C'est la limite de Telegram lui-même, revérifiée ici : le service peut être branché sur un
 /// serveur Bot API local, qui ne l'impose pas nécessairement, et un message démesuré ne doit
 /// pas traverser la suite du traitement.
+///
+/// Distincte de [`super::envoi::LIMITE_TEXTE`] malgré une valeur identique : ce sont deux
+/// limites de sens opposé — ce qu'on accepte de lire, et ce qu'on peut faire partir. Telegram
+/// pourrait faire bouger l'une sans l'autre, et les confondre reviendrait à laisser une
+/// évolution de l'API sortante changer ce qu'on accepte en entrée.
 pub const TAILLE_MAX_TEXTE_ENTRANT: usize = 4096;
 
 /// Une mise à jour, telle que Telegram la poste sur le webhook.
@@ -36,8 +45,12 @@ pub struct Update {
     /// Déclaré pour être **explicitement ignoré** : sans ce champ, une modification tomberait
     /// dans la même absence qu'une mise à jour inconnue, et on ne pourrait pas les distinguer
     /// dans les journaux.
+    ///
+    /// Le type dit l'intention et l'applique. Un `Option<Message>` aurait fait construire à
+    /// `serde` un message entier — allocations du texte et du prénom comprises — pour le jeter
+    /// à la ligne suivante ; `IgnoredAny` consomme la valeur sans rien bâtir.
     #[serde(default)]
-    pub edited_message: Option<Message>,
+    pub edited_message: Option<IgnoredAny>,
 }
 
 /// Un message Telegram.
@@ -107,6 +120,30 @@ pub enum Ecart {
 }
 
 impl Ecart {
+    /// Le niveau auquel cet écart mérite d'être journalisé.
+    ///
+    /// Porté par l'énuméré, comme [`crate::error::ErrorCode::niveau`], pour que le `match` de
+    /// [`crate::webhook`] reste exhaustif : un bras attrape-tout ferait tomber en silence toute
+    /// variante ajoutée par une phase suivante dans le niveau le plus bas.
+    #[must_use]
+    pub const fn niveau(self) -> Level {
+        match self {
+            // Telegram n'est pas censé livrer autre chose que ce que `allowed_updates`
+            // demande : en voir mérite un regard, sans mode debug.
+            Self::SansMessage => Level::INFO,
+            // Un texte au-delà du plafond de Telegram ne peut venir que d'un serveur Bot API
+            // local mal réglé, ou d'un appel forgé.
+            Self::TexteDemesure => Level::WARN,
+            // Fonctionnement normal : un autocollant, un groupe, un message corrigé.
+            Self::Modification
+            | Self::HorsPrive
+            | Self::AuteurBot
+            | Self::SansAuteur
+            | Self::SansTexte
+            | Self::TexteVide => Level::DEBUG,
+        }
+    }
+
     /// Libellé court, pour les journaux.
     #[must_use]
     pub const fn libelle(self) -> &'static str {
@@ -124,7 +161,7 @@ impl Ecart {
 }
 
 /// Un message entrant dont tout est certain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Recu {
     /// Où répondre.
     pub chat_id: i64,
@@ -176,7 +213,7 @@ impl Update {
         if texte.is_empty() {
             return Err(Ecart::TexteVide);
         }
-        if texte.encode_utf16().count() > TAILLE_MAX_TEXTE_ENTRANT {
+        if longueur_utf16(texte) > TAILLE_MAX_TEXTE_ENTRANT {
             return Err(Ecart::TexteDemesure);
         }
 
@@ -254,6 +291,30 @@ mod tests {
     }
 
     #[test]
+    fn chaque_ecart_porte_son_libelle_et_son_niveau() {
+        // L'exhaustivité est tenue par le compilateur sur `libelle` et `niveau` ; ce test
+        // rend le tableau lisible et vérifie qu'aucun libellé n'est vide.
+        for ecart in [
+            Ecart::SansMessage,
+            Ecart::Modification,
+            Ecart::HorsPrive,
+            Ecart::AuteurBot,
+            Ecart::SansAuteur,
+            Ecart::SansTexte,
+            Ecart::TexteVide,
+            Ecart::TexteDemesure,
+        ] {
+            println!(
+                "{:<16} niveau={:<5} « {} »",
+                format!("{ecart:?}"),
+                ecart.niveau(),
+                ecart.libelle()
+            );
+            assert!(!ecart.libelle().is_empty());
+        }
+    }
+
+    #[test]
     fn chaque_motif_d_ecart_est_reconnu_pour_ce_qu_il_est() {
         let cas: Vec<(&str, serde_json::Value, Ecart)> = vec![
             (
@@ -313,7 +374,7 @@ mod tests {
         println!(
             "texte de {} caractères, {} unités UTF-16, {} octets",
             enorme.chars().count(),
-            enorme.encode_utf16().count(),
+            longueur_utf16(&enorme),
             enorme.len()
         );
         let ecart = update_privee(&enorme)

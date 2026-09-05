@@ -61,6 +61,11 @@ pub enum ErrorCode {
     /// Le corps dépasse [`crate::http::TAILLE_MAX_CORPS`].
     CorpsTropVolumineux,
 
+    // --- 5xxx : ressources / quotas ---
+    /// La file de traitement est pleine. **Ce n'est pas une défaillance** : c'est la
+    /// contre-pression qui fonctionne, et le `503` demande à Telegram de repasser.
+    FileSaturee,
+
     // --- 9xxx : interne ---
     /// Défaillance interne. Jamais de détail sur le fil.
     Interne,
@@ -81,6 +86,7 @@ impl ErrorCode {
         Self::RouteInconnue,
         Self::MethodeNonAutorisee,
         Self::CorpsTropVolumineux,
+        Self::FileSaturee,
         Self::Interne,
         Self::DelaiDepasse,
     ];
@@ -96,6 +102,7 @@ impl ErrorCode {
             Self::RouteInconnue => 2004,
             Self::MethodeNonAutorisee => 2005,
             Self::CorpsTropVolumineux => 2006,
+            Self::FileSaturee => 5001,
             Self::Interne => 9001,
             Self::DelaiDepasse => 9002,
         }
@@ -112,6 +119,9 @@ impl ErrorCode {
             Self::RouteInconnue => "route inconnue",
             Self::MethodeNonAutorisee => "méthode non autorisée pour cette route",
             Self::CorpsTropVolumineux => "corps de requête trop volumineux",
+            // Vague à dessein : un appelant n'a pas à savoir si le service est saturé, ce qui
+            // renseignerait qui cherche à le saturer.
+            Self::FileSaturee => "requête refusée, réessayer plus tard",
             Self::Interne => "erreur interne",
             Self::DelaiDepasse => "délai de traitement dépassé",
         }
@@ -128,6 +138,9 @@ impl ErrorCode {
             Self::RouteInconnue => StatusCode::NOT_FOUND,
             Self::MethodeNonAutorisee => StatusCode::METHOD_NOT_ALLOWED,
             Self::CorpsTropVolumineux => StatusCode::PAYLOAD_TOO_LARGE,
+            // 503 et non 429 : Telegram rejoue sur 5xx, ce qui est exactement le comportement
+            // voulu. Un 429 le ferait abandonner selon sa propre politique.
+            Self::FileSaturee => StatusCode::SERVICE_UNAVAILABLE,
             // 503 et non 500 : la défaillance est presque toujours transitoire. Telegram
             // rejoue la mise à jour sur 5xx, ce qui est exactement le comportement voulu —
             // le message de l'utilisateur ne doit pas disparaître parce que le disque était
@@ -143,7 +156,9 @@ impl ErrorCode {
             Self::Interne | Self::DelaiDepasse => Level::ERROR,
             // Quelqu'un présente un mauvais secret : soit un déploiement mal configuré, soit
             // une sonde hostile. Les deux se regardent.
-            Self::WebhookSecretInvalide => Level::WARN,
+            // Une rafale de ces deux-là est le signal d'un déploiement désaccordé ou d'une
+            // saturation durable : les deux se regardent, aucun n'est du bruit de fond.
+            Self::WebhookSecretInvalide | Self::FileSaturee => Level::WARN,
             // Corps mal formés, routes inconnues : bruit de fond d'Internet.
             Self::PayloadIllisible
             | Self::PayloadInattendu
@@ -211,6 +226,22 @@ impl ApiError {
     }
 }
 
+/// Marqueur posé sur toute réponse produite par [`ApiError`].
+///
+/// # Pourquoi un marqueur plutôt qu'un reniflage de `content-type`
+///
+/// La couche d'enveloppe de [`crate::http`] doit distinguer une réponse d'erreur déjà conforme
+/// au contrat d'une réponse nue produite par `tower` ou le routeur. Elle le faisait en
+/// regardant si le `content-type` était `application/json` — une heuristique, pas une preuve :
+/// un futur gestionnaire écrivant `(StatusCode::BAD_REQUEST, Json(...))` la traversait intact
+/// et sortait du contrat sans qu'aucune ligne de code ne l'arrête.
+///
+/// Ce type est privé au crate et n'est inséré qu'ici. Sa présence ne peut donc venir que d'un
+/// `ApiError`, qui ne sait produire qu'un corps conforme : la condition devient vraie par
+/// construction au lieu d'être supposée.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DejaConforme;
+
 /// Le corps JSON d'une réponse d'erreur.
 #[derive(Debug, Serialize)]
 pub(crate) struct CorpsErreur {
@@ -236,10 +267,14 @@ impl IntoResponse for ApiError {
         match self.code.niveau() {
             Level::ERROR => tracing::error!(code, detail = %diagnostic, "requête rejetée"),
             Level::WARN => tracing::warn!(code, detail = %diagnostic, "requête rejetée"),
+            // Aucun code ne rend INFO aujourd'hui. Le bras reste parce que le `_` final
+            // journaliserait un futur code INFO au niveau DEBUG, où personne ne le verrait.
             Level::INFO => tracing::info!(code, detail = %diagnostic, "requête rejetée"),
             _ => tracing::debug!(code, detail = %diagnostic, "requête rejetée"),
         }
-        (self.code.statut(), Json(CorpsErreur::from(self.code))).into_response()
+        let mut reponse = (self.code.statut(), Json(CorpsErreur::from(self.code))).into_response();
+        reponse.extensions_mut().insert(DejaConforme);
+        reponse
     }
 }
 

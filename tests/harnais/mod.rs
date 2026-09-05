@@ -182,11 +182,9 @@ impl FauxTelegram {
 pub struct EnMarche {
     /// L'adresse réellement obtenue.
     pub adresse: std::net::SocketAddr,
-    /// Le nom d'utilisateur que le faux Telegram a annoncé.
-    pub bot: String,
     client: reqwest::Client,
-    arret: Option<oneshot::Sender<()>>,
-    tache: Option<JoinHandle<()>>,
+    arret: oneshot::Sender<()>,
+    tache: JoinHandle<()>,
 }
 
 /// Démarre le service contre un faux Telegram, et rend de quoi lui parler.
@@ -196,14 +194,9 @@ pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
         .await
         .expect("le service doit démarrer contre le faux Telegram");
 
-    // Lus avant que `servir` ne consomme la structure : l'adresse vient du port éphémère que
+    // Lue avant que `servir` ne consomme la structure : l'adresse vient du port éphémère que
     // le système a choisi, et c'est la seule façon de la connaître.
     let adresse_servie = prepare.adresse;
-    let bot = prepare
-        .identite
-        .username
-        .clone()
-        .unwrap_or_else(|| prepare.identite.first_name.clone());
 
     let (arret, reception) = oneshot::channel();
     let tache = tokio::spawn(async move {
@@ -224,10 +217,9 @@ pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
 
     EnMarche {
         adresse: adresse_servie,
-        bot,
         client,
-        arret: Some(arret),
-        tache: Some(tache),
+        arret,
+        tache,
     }
 }
 
@@ -242,6 +234,14 @@ async fn attendre_ecoute(client: &reqwest::Client, adresse: std::net::SocketAddr
     }
     panic!("le service n'écoute toujours pas sur {adresse} après {DELAI_ATTENTE:?}");
 }
+
+/// Longueur d'un texte en unités UTF-16, mesurée par **le code du service**.
+///
+/// Réexportée plutôt que recopiée : un test qui vérifie une limite avec sa propre mesure ne
+/// teste pas le code qu'il croit tester — si la mesure du service était fausse, il passerait.
+// `allow` : chaque cible de test n'utilise qu'une partie du harnais.
+#[allow(unused_imports)]
+pub use compagnon::telegram::envoi::longueur_utf16;
 
 impl EnMarche {
     /// Poste une mise à jour sur le webhook, avec le bon secret.
@@ -274,14 +274,82 @@ impl EnMarche {
 
     /// Interroge la sonde de santé.
     pub async fn sante(&self) -> Value {
-        self.client
-            .get(format!("http://{}/health", self.adresse))
-            .send()
+        self.obtenir("/health")
             .await
-            .expect("la sonde doit répondre")
             .json()
             .await
             .expect("la sonde renvoie du JSON")
+    }
+
+    /// Poste un corps volumineux avec le secret de son choix.
+    pub async fn poster_volumineux(&self, octets: usize, secret: &str) -> reqwest::Response {
+        self.client
+            .post(format!("http://{}/webhook", self.adresse))
+            .header("X-Telegram-Bot-Api-Secret-Token", secret)
+            .header("Content-Type", "application/json")
+            .body("x".repeat(octets))
+            .send()
+            .await
+            .expect("le webhook doit répondre")
+    }
+
+    /// Annonce un corps, puis n'en envoie **rien**, et rapporte ce que le service répond.
+    ///
+    /// C'est le seul moyen d'observer *quand* le corps est lu. Une requête ordinaire ne
+    /// discrimine pas les deux ordres — le refus est le même — alors qu'ici :
+    ///
+    /// - si le service lit le corps avant d'authentifier, il attend un corps qui n'arrive
+    ///   jamais et ne répond qu'au bout de son délai de requête ;
+    /// - s'il authentifie d'abord, il répond immédiatement.
+    ///
+    /// Passe par une socket brute : un client HTTP normal n'accepte pas d'annoncer un corps
+    /// qu'il ne fournit pas. Renvoie la ligne de statut et la durée d'attente.
+    pub async fn annoncer_un_corps_sans_l_envoyer(
+        &self,
+        octets: usize,
+        secret: &str,
+        patience: Duration,
+    ) -> (Option<String>, Duration) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let debut = std::time::Instant::now();
+        let mut socket = tokio::net::TcpStream::connect(self.adresse)
+            .await
+            .expect("le service doit accepter la connexion");
+
+        let entetes = format!(
+            "POST /webhook HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+             X-Telegram-Bot-Api-Secret-Token: {secret}\r\nContent-Length: {octets}\r\n\r\n",
+            self.adresse
+        );
+        socket
+            .write_all(entetes.as_bytes())
+            .await
+            .expect("les en-têtes doivent partir");
+        socket.flush().await.expect("vidage de la socket");
+
+        // Et rien de plus : le corps annoncé n'arrivera jamais.
+        let mut tampon = vec![0_u8; 256];
+        let lu = tokio::time::timeout(patience, socket.read(&mut tampon)).await;
+        let ecoule = debut.elapsed();
+
+        let statut = match lu {
+            Ok(Ok(n)) if n > 0 => String::from_utf8_lossy(&tampon[..n])
+                .lines()
+                .next()
+                .map(str::to_owned),
+            _ => None,
+        };
+        (statut, ecoule)
+    }
+
+    /// Un `POST` sans corps sur un chemin quelconque, pour éprouver le routage de méthode.
+    pub async fn poster_sur(&self, chemin: &str) -> reqwest::Response {
+        self.client
+            .post(format!("http://{}{chemin}", self.adresse))
+            .send()
+            .await
+            .expect("le service doit répondre")
     }
 
     /// Un `GET` sur un chemin quelconque, pour éprouver le contrat d'erreur.
@@ -295,15 +363,16 @@ impl EnMarche {
 
     /// Éteint le service et attend que la file soit vidée.
     ///
-    /// C'est le geste que teste [`crate`] : rendre la main ici signifie que tout ce qui avait
-    /// été accepté a été traité.
-    pub async fn eteindre(&mut self) {
-        if let Some(arret) = self.arret.take() {
-            let _ = arret.send(());
-        }
-        if let Some(tache) = self.tache.take() {
-            tache.await.expect("le service doit s'éteindre proprement");
-        }
+    /// Rendre la main ici signifie que tout ce qui avait été accepté a été traité.
+    ///
+    /// Prend `self` par valeur, et non `&mut self` : c'est ce qui fait d'un second appel une
+    /// erreur de compilation plutôt qu'un no-op silencieux, et cela supprime les deux `Option`
+    /// dont le seul rôle était de rendre le vidage réentrant.
+    pub async fn eteindre(self) {
+        let _ = self.arret.send(());
+        self.tache
+            .await
+            .expect("le service doit s'éteindre proprement");
     }
 }
 

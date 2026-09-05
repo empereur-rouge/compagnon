@@ -16,6 +16,10 @@ services:
       context: .
     image: compagnon:${VERSION_IMAGE:-local}
     restart: unless-stopped
+    # Sursis d'extinction. Lié à DELAI_VIDAGE dans src/app.rs (25 s) : le service borne son
+    # vidage de file en dessous de cette valeur, pour que l'abandon soit journalisé par lui
+    # plutôt que constaté par un SIGKILL muet. Les deux nombres bougent ensemble.
+    stop_grace_period: 30s
     # Les secrets viennent du .env, jamais de ce fichier : celui-ci est commité, pas lui.
     env_file:
       - ${FICHIER_ENV:-.env}
