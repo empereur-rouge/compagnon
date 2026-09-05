@@ -31,8 +31,34 @@ Phase 1.1 — la persistance. Livrée en deux temps : la couche base, puis la ba
   5432, pour qu'une base de développement installée sur la machine ne soit pas atteinte par une
   suite qui crée et détruit des bases.
 
+- **feat(worker)** : **quatre consommateurs concurrents** au lieu d'un seul. L'ordre reste tenu
+  là où il compte — dans une conversation — par la requête de prise, qui écarte tout
+  utilisateur déjà servi ailleurs. Le worker n'a donc aucune synchronisation à faire : la base
+  la lui donne. Sans cela, cent personnes écrivant dans la même minute feraient attendre la
+  centième cinq minutes dès que la réponse coûtera un appel de modèle, sans qu'aucune erreur ne
+  soit journalisée.
+- **feat(worker)** : la vérification d'âge barre l'accès au moteur, dès cette phase. Un refus
+  produit un message qui dit ce qui manque, jamais un silence — un silence est indiscernable
+  d'une panne.
+- **feat(db)** : la file est **bornée par utilisateur** (32 tâches). Une table n'est pas bornée
+  par construction, contrairement au canal de la phase 0, et une borne globale se retourne
+  contre les mauvaises personnes : un seul émetteur en rafale la remplirait et ferait refuser
+  tous les autres.
+- **feat(deploiement)** : service `base` dans `compose.yaml`, sans port publié, avec sonde
+  `pg_isready` dont le service attend le vert — le service migre au démarrage et doit trouver
+  une base qui répond, pas seulement un conteneur lancé.
+
 ### Changed
 
+- **change(app)** : **ce que l'extinction garantit a changé, et dans le bon sens.** Elle ne
+  vide plus la file : ce qu'elle contient survit à l'arrêt et sera repris au démarrage suivant.
+  Elle attend seulement la fin des tâches en cours, pour qu'aucune ne soit reprise au bail et
+  répondue deux fois.
+- **change(http)** : la sonde rend `base_repond` et `taches_en_attente` au lieu des places
+  libres du canal. Une base qui répond avec une file qui enfle est un cas bien plus fréquent
+  qu'une base muette, et les confondre en un seul booléen le rendrait indétectable.
+- **change(admission)** : l'inscription de l'utilisateur et la mise en file sont un seul geste
+  partagé par les deux portes d'entrée, dans cet ordre — la clé étrangère l'impose.
 - **change(test)** : les valeurs d'exemple et la construction de `Config` vivent dans
   `compagnon::fixtures`, derrière la caractéristique `fixtures`. Elles étaient recopiées dans
   six fichiers sur deux cibles de compilation — une revue l'avait signalé, et l'ajout d'un seul

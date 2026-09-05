@@ -30,11 +30,9 @@
 use std::future::Future;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
-
-use crate::admission;
+use crate::admission::{self, Admission};
+use crate::db::Base;
 use crate::telegram::Canal;
-use crate::telegram::types::Recu;
 
 /// Durée pendant laquelle Telegram garde la connexion ouverte avant de rendre une liste vide.
 ///
@@ -53,11 +51,7 @@ const REPOS_APRES_ECHEC: Duration = Duration::from_secs(3);
 ///
 /// Rend la main en ayant relâché l'expéditeur, ce qui referme la file et laisse le worker la
 /// vider — même contrat d'extinction que le service webhook.
-pub async fn tourner(
-    canal: &Canal,
-    expediteur: mpsc::Sender<Recu>,
-    arret: impl Future<Output = ()> + Send,
-) {
+pub async fn tourner(canal: &Canal, base: &Base, arret: impl Future<Output = ()> + Send) {
     // `0` signifie « tout ce qui est en attente ». Le retard accumulé pendant que le bot était
     // éteint est donc livré au démarrage, ce qui est le comportement souhaitable ici : un
     // développeur qui écrit au bot avant de le lancer veut voir ses messages arriver, pas
@@ -112,14 +106,20 @@ pub async fn tourner(
                     octets = recu.texte.len(),
                     "message reçu"
                 );
-                // `send` et non `try_send` : la scrutation est un consommateur unique, et
-                // attendre une place est exactement la contre-pression voulue. Le webhook, lui,
-                // doit refuser tout de suite pour que Telegram rejoue.
-                if expediteur.send(recu).await.is_err() {
-                    tracing::error!("la file s'est fermée, scrutation interrompue");
-                    return;
+                match admission::enfiler(base, &recu).await {
+                    Ok(Admission::Enfile) => retenus += 1,
+                    // La borne est atteinte : contrairement au webhook, personne ne rejouera
+                    // pour nous. On avance quand même l'`offset` — sinon Telegram redonnerait
+                    // ce message sans fin, et la scrutation tournerait à vide sur lui.
+                    Ok(Admission::Sature) => tracing::warn!(
+                        chat_id = recu.chat_id,
+                        "borne de file atteinte, message abandonné"
+                    ),
+                    Err(erreur) => {
+                        tracing::error!(%erreur, "mise en file impossible, scrutation interrompue");
+                        return;
+                    }
                 }
-                retenus += 1;
             }
 
             // L'`offset` n'avance qu'une fois la mise à jour prise en charge : avancé avant,

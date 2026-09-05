@@ -14,8 +14,8 @@
 //! tranché. Le reste du code ne manipule que [`Recu`] et n'a donc jamais à se demander si un
 //! message a bien un auteur.
 
-use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde::{Deserialize, Serialize};
 use tracing::Level;
 
 use super::envoi::longueur_utf16;
@@ -161,7 +161,10 @@ impl Ecart {
 }
 
 /// Un message entrant dont tout est certain.
-#[derive(Debug)]
+///
+/// Sérialisable parce qu'il transite désormais par la base : la file porte la charge utile en
+/// `jsonb`, et c'est ce qui lui permet de survivre à l'arrêt du processus.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Recu {
     /// Où répondre.
     pub chat_id: i64,

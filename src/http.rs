@@ -19,17 +19,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
-use tokio::sync::mpsc;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::VERSION;
+use crate::db::Base;
 use crate::error::{ApiError, CorpsErreur, DejaConforme, ErrorCode};
 use crate::horloge;
 use crate::telegram::Canal;
-use crate::telegram::types::Recu;
 use crate::webhook;
 
 /// Taille maximale d'un corps de requête.
@@ -52,8 +51,11 @@ const DELAI_REQUETE: Duration = Duration::from_secs(5);
 pub struct EtatApp {
     /// Le canal Telegram, partagé.
     pub canal: Arc<Canal>,
-    /// L'entrée de la file de traitement.
-    pub expediteur: mpsc::Sender<Recu>,
+    /// La base : file de traitement, utilisateurs, et tout ce que la phase 1 y ajoutera.
+    ///
+    /// `PgPool` est interne­ment un `Arc` : cloner l'état à chaque requête reste trois
+    /// incréments atomiques et zéro allocation, comme avec le canal mpsc qu'il remplace.
+    pub base: Base,
     /// Quand le service a démarré, en secondes depuis l'époque Unix.
     pub demarre_le: i64,
 }
@@ -185,26 +187,36 @@ pub struct Sante {
     pub version: &'static str,
     /// Secondes écoulées depuis le démarrage.
     pub depuis: i64,
-    /// Places encore libres dans la file de traitement.
+    /// Vrai si la base répond.
     ///
-    /// Un zéro durable est le signal que le worker n'avance plus — l'information la plus utile
-    /// que cette sonde puisse porter.
-    pub file_libre: usize,
-    /// Capacité totale de la file, pour situer `file_libre`.
+    /// La sonde reste à `200` même quand il vaut `false` : le service est joignable, et
+    /// répondre `503` ferait retirer l'instance d'un équilibreur au moment précis où ses
+    /// journaux sont la seule source de diagnostic. C'est le champ qu'un supervision doit
+    /// lire, pas le code HTTP.
+    pub base_repond: bool,
+    /// Nombre de tâches encore à traiter, baux expirés compris.
     ///
-    /// Lue sur le canal et non sur la constante : les deux chiffres viennent ainsi de la même
-    /// source. Recopier la constante ferait mentir la sonde le jour où le canal serait
-    /// construit avec une autre taille, sans que rien ne le signale.
-    pub file_capacite: usize,
+    /// Une valeur qui croît sans redescendre est le signal que les consommateurs n'avancent
+    /// plus — l'information la plus utile que cette sonde puisse porter. `null` si la base
+    /// n'a pas répondu.
+    pub taches_en_attente: Option<i64>,
+    /// Nombre de consommateurs lancés, pour situer la valeur précédente.
+    pub workers: usize,
 }
 
 /// Sonde de santé.
 async fn sante(State(etat): State<EtatApp>) -> Json<Sante> {
+    // Deux informations distinctes : la base répond-elle, et la file avance-t-elle. Une base
+    // qui répond avec une file qui enfle est un cas bien plus fréquent qu'une base muette, et
+    // les confondre en un seul booléen le rendrait indétectable.
+    let taches_en_attente = etat.base.taches_en_attente().await.ok();
+    let base_repond = taches_en_attente.is_some();
     Json(Sante {
         statut: "ok",
         version: VERSION,
         depuis: horloge::maintenant() - etat.demarre_le,
-        file_libre: etat.expediteur.capacity(),
-        file_capacite: etat.expediteur.max_capacity(),
+        base_repond,
+        taches_en_attente,
+        workers: crate::worker::WORKERS,
     })
 }

@@ -11,8 +11,13 @@
 //! l'appellent. C'est aussi l'endroit nommé où la politique d'admission grossira : un
 //! utilisateur banni, un quota, un personnage qui accepterait les groupes.
 
-use crate::telegram::types::{Ecart, Recu, Update};
 use tracing::Level;
+
+use crate::db::{Base, ErreurBase, file, utilisateurs};
+use crate::telegram::types::{Ecart, Recu, Update};
+
+/// Le type de tâche produit par un message entrant.
+const TACHE_MESSAGE: &str = "message_entrant";
 
 /// Retient ce qui mérite une réponse, en journalisant l'écart le cas échéant.
 ///
@@ -47,4 +52,43 @@ fn journaliser(update_id: i64, ecart: Ecart) {
         Level::INFO => tracing::info!(update_id, motif, "mise à jour écartée"),
         _ => tracing::debug!(update_id, motif, "mise à jour écartée"),
     }
+}
+
+/// Ce qu'il est advenu d'un message retenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    /// Enfilé, un worker le prendra.
+    Enfile,
+    /// Refusé : cet utilisateur a déjà trop de tâches en attente.
+    Sature,
+}
+
+/// Inscrit l'utilisateur s'il est inconnu, puis enfile le message.
+///
+/// Les deux gestes vont ensemble et dans cet ordre : `file_messages.utilisateur_id` porte une
+/// clé étrangère, donc enfiler avant d'inscrire échouerait. Les regrouper ici évite que les
+/// deux portes d'entrée — webhook et scrutation — n'en donnent deux versions qui divergeraient.
+///
+/// Le prénom est mis à jour au passage : c'est la seule occasion de le faire, Telegram ne le
+/// livrant qu'avec un message.
+///
+/// # Errors
+///
+/// [`ErreurBase`] si la base refuse l'une des deux écritures.
+pub async fn enfiler(base: &Base, recu: &Recu) -> Result<Admission, ErreurBase> {
+    utilisateurs::assurer(base.pool(), recu.utilisateur_id, Some(&recu.prenom)).await?;
+
+    let charge = serde_json::to_value(recu).map_err(|erreur| {
+        // Un `Recu` est fait de types simples : cette conversion ne peut pas échouer en
+        // pratique. On ne l'écrase pas pour autant — un `unwrap` ici deviendrait faux le jour
+        // où `Recu` gagnerait un champ exotique, et il tomberait dans le chemin d'entrée.
+        ErreurBase::Requete(sqlx::Error::Encode(Box::new(erreur)))
+    })?;
+
+    let enfilee = file::enfiler(base.pool(), recu.utilisateur_id, TACHE_MESSAGE, &charge).await?;
+    Ok(if enfilee.is_some() {
+        Admission::Enfile
+    } else {
+        Admission::Sature
+    })
 }
