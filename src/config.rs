@@ -175,7 +175,11 @@ impl Config {
 }
 
 /// Lit une variable obligatoire, en refusant la chaîne vide et les espaces seuls.
-fn lire(nom: &'static str) -> Result<String, ErreurConfig> {
+///
+/// `pub(crate)` : `modele::http` lit ses propres variables et doit le faire avec exactement
+/// ces règles — « vide vaut absent », espaces rognés. Deux définitions de « variable
+/// renseignée » divergeraient, et l'une des deux accepterait un jour une clé faite d'espaces.
+pub(crate) fn lire(nom: &'static str) -> Result<String, ErreurConfig> {
     match std::env::var(nom) {
         Ok(valeur) if !valeur.trim().is_empty() => Ok(valeur.trim().to_owned()),
         _ => Err(ErreurConfig::Absente(nom)),
@@ -187,7 +191,7 @@ fn lire(nom: &'static str) -> Result<String, ErreurConfig> {
 /// Délègue à [`lire`] : « ce qu'est une variable renseignée » n'a ainsi qu'une définition. Les
 /// deux fonctions ont porté le même `match` recopié, ce qui aurait laissé la règle diverger en
 /// silence le jour où l'une des deux aurait changé de politique sur les espaces.
-fn lire_ou(nom: &'static str, defaut: &str) -> String {
+pub(crate) fn lire_ou(nom: &'static str, defaut: &str) -> String {
     lire(nom).unwrap_or_else(|_| defaut.to_owned())
 }
 

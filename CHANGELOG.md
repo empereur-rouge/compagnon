@@ -31,8 +31,41 @@ Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
   moitié aval d'une garantie décidée en 1.2 : le worker lira `prompt_systeme_genere` plutôt que
   de recomposer les traits, parce que c'est le texte que la modération a approuvé.
 
+- **feat(modele)** : `modele::http::ClientHttp`, l'implémentation concrète contre une API
+  compatible `POST /chat/completions`. Retenue non par attachement à un fournisseur mais parce
+  que vLLM, TGI et la quasi-totalité des hébergeurs de GPU l'exposent déjà : c'est ce qui rend
+  le remplacement de backend réel plutôt que théorique.
+- **feat(db)** : migration `0007_consommation.sql` et `db::consommation`. Registre **append-only**
+  tenu par trigger : ni `update` ni `delete`, à une exception décrite exactement — l'anonymisation
+  RGPD, qui détache la ligne de son utilisateur sans en perdre le montant. Le trigger compare la
+  ligne entière plutôt qu'une liste de colonnes, pour que toute colonne future soit couverte le
+  jour où elle apparaît.
+- **feat(cli)** : `compagnon modele essai <texte>` — un appel réel au fournisseur configuré, qui
+  imprime la réponse, le modèle **rendu**, les jetons, la durée mesurée et le coût à six
+  décimales. C'est l'outil qui a trouvé les deux défauts ci-dessous.
+- **test** : neuf tests du client HTTP rejouant des formes de réponse **relevées sur un vrai
+  serveur**, et cinq tests du registre sur un vrai PostgreSQL — dont
+  `tout_le_vocabulaire_rust_est_accepte_par_la_base`, qui écrit les 45 combinaisons de
+  `type` × `origine` × `statut` et attrape une variante ajoutée d'un seul côté.
+
+### Fixed
+
+- **fix(modele)** : un fournisseur qui répond **`200 OK`** avec `{"error": …}` était lu comme une
+  génération vide, donc comme un incident passager, donc rejoué. Constaté sur un vrai serveur :
+  c'est ce qu'il rend sur un chemin inexistant, là où un faux serveur aurait rendu `404`. Une URL
+  mal saisie épuisait donc les tentatives en affichant « le modèle n'a rien produit ».
+  `ErreurModele::RefusApplicatif` la classe désormais comme permanente.
+- **fix(modele)** : une génération coupée par la limite de jetons **avant tout texte** rendait le
+  même message qu'un modèle réellement muet. Mesuré sur un modèle à raisonnement : quatre appels
+  sur cinq à `max_tokens = 80` rendent `content: ""` avec `finish_reason: "length"`.
+  `ErreurModele::Tronquee` envoie vers `MODELE_JETONS_MAX` au lieu d'envoyer chercher une panne
+  de modèle.
+
 ### Changed
 
+- **change(panne)** : `Panne` quitte `telegram::envoi` pour `crate::panne`. Deux copies du même
+  énuméré avaient coexisté le temps d'un commit, et deux copies d'une garantie divergent — celle
+  qu'on oublie de corriger devient celle par laquelle la fuite revient.
 - **change(secret)** : les trois secrets existants passent par `Secret` — `Config::jeton_bot`,
   `Config::secret_webhook`, `Config::url_base`, ainsi que `Canal::racine` et `Canal::secret`.
   Leur protection reposait jusqu'ici sur un `Debug` écrit à la main et sur l'**absence** de

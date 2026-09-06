@@ -116,6 +116,15 @@ impl BaseDeTest {
             .expect("vérification d'âge enregistrée");
     }
 
+    /// Le pool de la base jetable, pour appeler directement les fonctions de `compagnon::db`.
+    ///
+    /// Exposé plutôt que recopié : un test qui écrit son propre SQL éprouve son SQL, pas celui
+    /// de la production. C'est la leçon que `verifier_age` a déjà servie ici.
+    #[must_use]
+    pub fn pool(&self) -> &sqlx::PgPool {
+        self.base.pool()
+    }
+
     /// Compte les tâches encore à traiter, quel que soit leur état d'attente.
     ///
     /// Distincte de `Base::taches_en_attente` : celle-ci compte aussi les tâches à bail vivant,

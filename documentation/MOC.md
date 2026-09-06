@@ -1,8 +1,8 @@
 ---
 tags: [moc]
 created: 2026-09-05
-updated: 2026-09-05
-version: v0.8.0
+updated: 2026-09-06
+version: v0.10.0
 ---
 
 # Carte du projet — compagnon
@@ -26,6 +26,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 | Fiche | Phase | Sujet |
 |---|---|---|
+| [[client-modele]] | 1.3 | trait, appel HTTP, double de test, registre des coûts |
 | [[compagnon]] | 1.2 | catalogues, traits, prompt composé, modération |
 | [[persistance]] | 1.1 | base, file à bail, workers concurrents, vérification d'âge |
 | [[transport-telegram]] | 0 | webhook **et scrutation**, authentification, file, envoi, découpage |
@@ -40,7 +41,6 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
 
 | Fiche à venir | Phase | Sujet |
 |---|---|---|
-| `moteur-de-dialogue` | 1 | appel du modèle, mise en cache du préfixe, refus |
 | `memoire` | 2 | journal roulant, souvenirs structurés, état de relation |
 | `medias` | 3 | file de génération à bail, cache de `file_id` |
 | `voix` | 4 | synthèse sortante, transcription entrante, transcodage Opus |
@@ -69,3 +69,13 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
   d'une réponse appartient au worker.
 - **Tout est validé au démarrage** — une faute de déploiement fait échouer le démarrage, pas le
   premier message d'un utilisateur.
+- **Un secret est un type, pas une consigne** — `Secret` n'a pas de `Display`, donc
+  `format!("{secret}")` ne compile pas. La règle avait déjà échoué deux fois en tant que
+  commentaire. Voir [[transport-telegram]].
+- **Le coût de chaque appel est inscrit, et ne se réécrit pas** — `consommation` est un registre
+  append-only, dès la phase 1.3 et avant tout abonnement : un coût non inscrit au moment de
+  l'appel est perdu, et le prix d'un abonnement ne se fixe pas sur une estimation. Voir
+  [[client-modele]].
+- **On ne suppose pas ce qu'un fournisseur renvoie, on le mesure** — `compagnon modele essai`
+  fait l'appel pour de vrai. Deux comportements que des tests simulés auraient manqués sont
+  documentés dans [[client-modele]].

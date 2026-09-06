@@ -645,8 +645,7 @@
   Stable ids on moments are required — annotations are keyed by moment id.
   Prefix a cell value with [Assumption] to flag it as unvalidated.
 -->
-<script type="application/json" id="journeys-data">
-{
+<script type="application/json" id="journeys-data">{
   "actors": [
     {
       "id": "utilisateur",
@@ -848,6 +847,96 @@
               "frontstage": "Dans le terminal : « message reçu » avec le prénom et la taille. Dans Telegram : « est en train d'écrire… » puis l'écho.",
               "backstage": "scrutation::tourner reçoit le lot, admission::retenir filtre — le MÊME code que le webhook —, la file transporte, worker::traiter répond. L'offset avance ensuite pour accuser auprès de Telegram.",
               "support": "src/scrutation.rs, src/admission.rs, src/worker.rs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "brancher-un-modele",
+      "title": "Branche un fournisseur de modèle et en mesure le coût",
+      "actor": "exploitant",
+      "category": "deploiement",
+      "scenario": "Le transport marche, le bot répond en écho. Il faut maintenant lui donner un modèle — et savoir ce qu'un message coûte avant de fixer le prix d'un abonnement.",
+      "goal": "Obtenir une vraie réponse d'un vrai fournisseur, et lire le coût de cet appel au tarif réel.",
+      "stages": [
+        {
+          "title": "Choisir et renseigner",
+          "moments": [
+            {
+              "id": "renseigner-le-fournisseur",
+              "title": "Renseigne le fournisseur dans .env",
+              "doing": "Renseigne MODELE_API_BASE, MODELE_API_CLE, MODELE_NOM, MODELE_FOURNISSEUR, puis recopie les deux tarifs depuis la page de prix du fournisseur.",
+              "thinking": "[Assumption] Pourquoi les tarifs sont-ils obligatoires alors que le reste a des valeurs par défaut ?",
+              "feeling": 3,
+              "pain": "Les tarifs se recopient à la main depuis une page web, et rien ne peut vérifier qu'ils sont justes : une virgule mal placée produit un registre de coûts faux, qui répond quand même à la question du prix.",
+              "opportunity": "[Assumption] Rapprocher périodiquement la somme du registre de la facture réelle du fournisseur, et signaler l'écart — c'est le seul contrôle possible sur un tarif saisi à la main.",
+              "evidence": "",
+              "frontstage": ".env.example, section « Le modèle de langue », commentée variable par variable.",
+              "backstage": "ConfigModele::depuis_environnement valide d'un coup : URL en http(s), tarifs décimaux et positifs, température dans [0,2], jetons non nuls. Un tarif absent refuse le démarrage en nommant la variable.",
+              "support": "src/modele/http.rs, src/config.rs."
+            }
+          ]
+        },
+        {
+          "title": "Éprouver",
+          "moments": [
+            {
+              "id": "essai-modele",
+              "title": "Lance compagnon modele essai",
+              "doing": "Exécute `compagnon modele essai \"Salut, tu vas bien ?\"` et lit ce qui revient : la réponse, le modèle réellement utilisé, les jetons, la durée mesurée et le coût.",
+              "thinking": "[Assumption] Est-ce que c'est bien le modèle que j'ai demandé qui a répondu ?",
+              "feeling": 4,
+              "pain": "Un serveur peut répondre avec un AUTRE modèle que celui demandé, sans erreur — constaté. Seule la ligne « modèle rendu » le révèle, et il faut penser à la lire.",
+              "opportunity": "[Assumption] Signaler explicitement l'écart entre le modèle demandé et le modèle rendu, au lieu de laisser l'exploitant comparer deux lignes.",
+              "evidence": "",
+              "frontstage": "La sortie de la commande : réponse, modèle rendu, fournisseur, jetons entrée/sortie, durée, troncature, coût à six décimales.",
+              "backstage": "ClientHttp::repondre fait UN appel POST /chat/completions avec un délai explicite. Pas de boucle de reprise : la file à bail en a déjà une, bornée et persistante.",
+              "support": "src/cli_modele.rs, src/modele/http.rs."
+            },
+            {
+              "id": "essai-modele-echoue",
+              "title": "L'essai échoue et il faut savoir pourquoi",
+              "doing": "Lit le message d'échec et la ligne « vaut une reprise » pour savoir s'il faut corriger la configuration ou simplement réessayer.",
+              "thinking": "[Assumption] Est-ce que c'est mon URL, ma clé, mon budget de jetons, ou le fournisseur qui a un problème ?",
+              "feeling": 2,
+              "pain": "Corrigé : une URL fausse rendait « le modèle n'a rien produit » et se réessayait, parce que le serveur répond 200 avec un corps d'erreur au lieu de 404. Elle rend désormais « le fournisseur a répondu 200 en annonçant une erreur », sans reprise.",
+              "opportunity": "[Assumption] Un mode diagnostic qui essaierait successivement /models puis /chat/completions dirait en une commande laquelle des deux couches est en cause.",
+              "evidence": "",
+              "frontstage": "Cinq messages distincts, chacun désignant sa cause : connexion impossible, délai dépassé, refus par code, refus applicatif, budget de jetons épuisé avant tout texte.",
+              "backstage": "ErreurModele::merite_une_reprise sépare ce qui se rejoue (délai, connexion, 429, 5xx, vide) de ce qui se refera échouer (400, 401, 403, refus applicatif).",
+              "support": "src/modele/mod.rs, src/panne.rs."
+            },
+            {
+              "id": "modele-a-raisonnement",
+              "title": "Le modèle réfléchit et ne dit rien",
+              "doing": "Constate des réponses vides et augmente MODELE_JETONS_MAX, ou change de modèle.",
+              "thinking": "[Assumption] Le modèle est cassé ? Non — il a dépensé tout son budget à réfléchir.",
+              "feeling": 2,
+              "pain": "Un modèle à raisonnement consomme son budget de sortie dans sa réflexion : mesuré, quatre appels sur cinq à 80 jetons rendaient un texte vide, et 575 jetons ont été facturés pour une réponse d'une phrase.",
+              "opportunity": "[Assumption] Déconseiller les modèles à raisonnement dans DECISIONS-MODELES.md : ils coûtent plusieurs fois le prix d'un modèle d'instruction pour un compagnon, et leur réflexion peut fuir dans la réponse.",
+              "evidence": "",
+              "frontstage": "Le message « la limite de jetons a coupé la génération avant tout texte », distinct de « le modèle n'a rien produit ».",
+              "backstage": "Le client distingue les deux par finish_reason : « length » avec un contenu vide désigne le budget, « stop » désigne un modèle réellement muet.",
+              "support": "src/modele/http.rs."
+            }
+          ]
+        },
+        {
+          "title": "Décider",
+          "moments": [
+            {
+              "id": "lire-le-cout",
+              "title": "Lit le coût et le projette",
+              "doing": "Multiplie le coût d'un message par le volume attendu pour situer le prix d'un abonnement.",
+              "thinking": "[Assumption] Un message à 0,0006 € fait 0,60 € les mille — un abonné actif tient-il dans le prix visé ?",
+              "feeling": 4,
+              "pain": "[Assumption] La projection se fait de tête, sur un seul appel, avec un prompt d'essai plus court qu'un vrai prompt de compagnon : elle sous-estime.",
+              "opportunity": "[Assumption] Une commande qui somme le registre par utilisateur et par mois donnerait le chiffre réel dès les premières semaines, ce que db::consommation::cout_depuis sait déjà calculer.",
+              "evidence": "",
+              "frontstage": "La ligne « coût » de la commande, à six décimales — la même précision que la colonne qui l'enregistrera.",
+              "backstage": "Chaque appel réel écrira une ligne dans consommation : registre append-only, seule mutation admise l'anonymisation RGPD, qui détache sans perdre le montant.",
+              "support": "migrations/0007_consommation.sql, src/db/consommation.rs."
             }
           ]
         }
@@ -1139,8 +1228,7 @@
       ]
     }
   ]
-}
-</script>
+}</script>
 
 <script>
 (function () {

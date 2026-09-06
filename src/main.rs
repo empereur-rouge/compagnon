@@ -10,6 +10,7 @@
 //! compagnon ecouter                  reçoit par scrutation, sans domaine ni TLS
 //! compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
 //! compagnon catalogues               ce parmi quoi un compagnon peut être composé
+//! compagnon modele essai <texte>     appelle le fournisseur pour de vrai, et en donne le coût
 //! compagnon compagnon creer …        crée un compagnon à partir de choix
 //! compagnon compagnon montrer <id>   affiche le prompt composé
 //! compagnon utilisateur age <id>     enregistre une vérification d'âge
@@ -18,7 +19,7 @@
 //! ```
 
 use compagnon::config::Config;
-use compagnon::{VERSION, app, cli, cli_compagnon, telemetry};
+use compagnon::{VERSION, app, cli, cli_compagnon, cli_modele, telemetry};
 
 /// Code de sortie quand le service refuse de démarrer, ou qu'une commande échoue.
 const SORTIE_ERREUR: i32 = 1;
@@ -34,6 +35,8 @@ compagnon — plateforme de personnages conversationnels sur Telegram
   compagnon ecouter                  reçoit par scrutation — ni domaine, ni TLS, ni tunnel ;
                                      pour éprouver le bot depuis un poste de travail
   compagnon sonde                    interroge /health, sort en 0 ou 1
+  compagnon modele essai <texte>     appelle le fournisseur configuré pour de vrai : réponse,
+                                     jetons, durée mesurée et coût au tarif en vigueur
   compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
   compagnon webhook retirer          retire le webhook
 
@@ -100,6 +103,13 @@ async fn main() {
             rendre_compte_compagnon(
                 cli_compagnon::verifier_age(&config_ou_sortir(), utilisateur).await,
             );
+        }
+        ["modele", "essai", reste @ ..] if !reste.is_empty() => {
+            telemetry::init_vers_stderr();
+            if let Err(erreur) = cli_modele::essai(&reste.join(" ")).await {
+                eprintln!("{erreur}");
+                std::process::exit(SORTIE_ERREUR);
+            }
         }
         ["webhook", "retirer"] => {
             telemetry::init_vers_stderr();

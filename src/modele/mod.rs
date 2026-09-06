@@ -14,13 +14,14 @@
 //! # Ce qui ne traverse pas ce module
 //!
 //! La clé d'accès au fournisseur ne sort jamais de son [`crate::secret::Secret`], et **aucune
-//! variante d'erreur ne peut porter l'URL de l'appel**. Ce n'est pas de la prudence : dans ce
-//! projet, un `reqwest::Error` conservé tel quel a déjà écrit un jeton dans les journaux. La
-//! leçon a été tirée en classant la panne au lieu de la transporter — voir
-//! [`crate::telegram::envoi::Panne`], dont [`Panne`] ici est le pendant.
+//! variante d'erreur ne peut porter l'URL de l'appel** : [`ErreurModele::Injoignable`] ne porte
+//! qu'une [`Panne`] — un énuméré nu — et [`ErreurModele::Refuse`] qu'un `u16`. Le corps d'une
+//! réponse d'erreur n'entre nulle part, parce qu'un message d'erreur de fournisseur reprend
+//! souvent la requête, donc le prompt système, donc tout ce que le compagnon est.
 
 #[cfg(any(test, feature = "fixtures"))]
 pub mod double;
+pub mod http;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -33,6 +34,22 @@ pub enum Role {
     Utilisateur,
     /// Le compagnon.
     Compagnon,
+}
+
+impl Role {
+    /// Le nom du rôle dans l'API du fournisseur.
+    ///
+    /// `user` et `assistant` sont les valeurs de la convention OpenAI, que vLLM, TGI et la
+    /// plupart des hébergeurs exposent. Les traduire ici garde le reste du code dans le
+    /// vocabulaire du produit, et laisse un fournisseur à la convention différente n'avoir
+    /// qu'un endroit à changer.
+    #[must_use]
+    pub const fn dans_l_api(self) -> &'static str {
+        match self {
+            Self::Utilisateur => "user",
+            Self::Compagnon => "assistant",
+        }
+    }
 }
 
 /// Un tour de parole.
@@ -79,46 +96,18 @@ pub struct ReponseModele {
     pub unites_sortie: Option<i32>,
     /// Temps de l'appel, mesuré ici et non annoncé par le fournisseur.
     pub duree: Duration,
+    /// Vrai si la génération a été coupée par la limite de jetons plutôt que terminée.
+    ///
+    /// Un compagnon dont la phrase s'arrête au milieu d'un mot se lit comme une panne. C'est
+    /// une propriété du produit, pas un détail de transport : l'appelant en a besoin pour
+    /// décider quoi envoyer, et le fournisseur est le seul à la connaître.
+    pub tronquee: bool,
 }
 
-/// La nature d'un échec, sans rien de ce qui l'a causé.
-///
-/// Même forme et même raison que [`crate::telegram::envoi::Panne`] : classer plutôt que
-/// transporter. Une erreur `reqwest` conservée telle quelle porte l'URL de l'appel, donc la
-/// clé si elle y figure — et ce projet a déjà écrit un secret dans ses journaux par ce chemin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panne {
-    /// L'appel n'a pas abouti dans le délai imparti.
-    Delai,
-    /// La connexion n'a pas pu être établie.
-    Connexion,
-    /// La réponse est arrivée mais n'a pas pu être lue.
-    Corps,
-    /// La requête n'a pas pu être formée ou émise.
-    Requete,
-    /// Rien de ce qui précède.
-    Autre,
-}
-
-impl Panne {
-    /// Libellé lisible en journal.
-    #[must_use]
-    pub const fn libelle(self) -> &'static str {
-        match self {
-            Self::Delai => "délai dépassé",
-            Self::Connexion => "connexion impossible",
-            Self::Corps => "réponse illisible",
-            Self::Requete => "requête non émise",
-            Self::Autre => "cause indéterminée",
-        }
-    }
-}
-
-impl std::fmt::Display for Panne {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.libelle())
-    }
-}
+// La nature de la panne est celle de tout appel sortant : réexportée depuis `crate::panne`,
+// pas redéfinie ici. Une seconde copie de ce type a existé le temps d'un commit, et deux
+// copies d'une garantie divergent.
+pub use crate::panne::Panne;
 
 /// Ce qui a empêché le modèle de répondre.
 #[derive(Debug, thiserror::Error)]
@@ -137,12 +126,42 @@ pub enum ErreurModele {
         code: u16,
     },
 
+    /// Le fournisseur a répondu `200`, et a annoncé une erreur dans le corps.
+    ///
+    /// Constaté sur un vrai serveur : `POST /v9/chat/completions` (chemin inexistant) rend
+    /// **`200 OK`** avec `{"error": "Unexpected endpoint or method."}`. Un faux serveur aurait
+    /// rendu `404`, et la classification aurait paru correcte sans l'être.
+    ///
+    /// Distinguée de [`ErreurModele::Vide`] parce que la conséquence diffère : un vide se
+    /// rejoue, une erreur applicative se rejouera à l'identique. Les confondre transforme une
+    /// URL mal saisie en trois tentatives silencieuses et un message « le modèle n'a rien
+    /// produit » devant quelqu'un qui cherche une panne de modèle.
+    ///
+    /// Ne porte pas le texte de l'erreur : un message de fournisseur reprend souvent la
+    /// requête. Il est journalisé au point d'appel, jamais transporté.
+    #[error("le fournisseur a répondu 200 en annonçant une erreur")]
+    RefusApplicatif,
+
     /// Le modèle a répondu, mais sans rien dire.
     ///
-    /// Arrive plus souvent qu'on ne croit — un filtre côté fournisseur, une génération
-    /// tronquée à zéro jeton. Distinguée d'un refus parce qu'elle se rejoue utilement.
+    /// Un filtre côté fournisseur, une génération refusée en silence. Distinguée d'un refus
+    /// parce qu'elle se rejoue utilement.
     #[error("le modèle n'a rien produit")]
     Vide,
+
+    /// La limite de jetons a coupé la génération **avant** le moindre texte.
+    ///
+    /// Mesuré sur un vrai modèle : un modèle à raisonnement dépense son budget dans sa
+    /// réflexion et rend `content: ""` avec `finish_reason: "length"`. Sur cinq appels
+    /// identiques à `max_tokens = 80`, quatre finissent ainsi.
+    ///
+    /// Séparée de [`ErreurModele::Vide`] pour le **diagnostic**, pas pour la décision : les
+    /// deux se rejouent, mais « le modèle n'a rien produit » enverrait chercher une panne de
+    /// modèle là où il faut augmenter `MODELE_JETONS_MAX` ou changer de modèle. C'est la même
+    /// confusion que [`ErreurModele::RefusApplicatif`] corrige côté transport — une cause
+    /// permanente déguisée en incident passager.
+    #[error("la limite de jetons a coupé la génération avant tout texte")]
+    Tronquee,
 }
 
 impl ErreurModele {
@@ -154,8 +173,16 @@ impl ErreurModele {
     #[must_use]
     pub const fn merite_une_reprise(&self) -> bool {
         match self {
-            // L'appel n'a pas abouti : l'état distant est inchangé.
-            Self::Injoignable(_) | Self::Vide => true,
+            Self::Injoignable(panne) => panne.merite_une_reprise(),
+            // Le fournisseur a répondu, mais sans texte exploitable. Rejouable : mesuré, un
+            // appel sur cinq aboutit là où les quatre autres ont épuisé leur budget. Rejouer
+            // sert donc l'utilisateur qui attend, pendant que le libellé distinct sert
+            // l'exploitant qui lit le journal.
+            Self::Vide | Self::Tronquee => true,
+            // Le fournisseur a été joint et a refusé. Rien n'indique que la même requête
+            // aboutirait plus tard, et la cause la plus probable est une configuration
+            // fausse — qu'aucune reprise ne corrigera.
+            Self::RefusApplicatif => false,
             Self::Refuse { code } => match *code {
                 // Débit dépassé, ou défaillance côté fournisseur.
                 429 | 500..=599 => true,

@@ -33,6 +33,7 @@
 //! |---|---|
 //! | [`app`] | séquence de démarrage, partagée par la production et les tests |
 //! | [`cli`] | gestes d'exploitation exécutables sur l'artefact livré |
+//! | [`cli_modele`] | un appel réel au fournisseur, pour l'éprouver et en mesurer le coût |
 //! | [`config`] | lecture et validation de l'environnement, au démarrage |
 //! | [`error`] | codes d'erreur numériques stables de la surface HTTP |
 //! | [`horloge`] | temps, en un seul endroit, pour que les tests puissent le figer |
@@ -41,6 +42,7 @@
 //! | [`personnage`] | les traits d un compagnon, et le prompt qu ils composent |
 //! | [`http`] | routeur, état partagé, sonde de santé |
 //! | [`modele`] | le moteur qui écrit les réponses, et son double de test |
+//! | [`panne`] | la nature d'un échec de transport, sans l'URL qui l'a causé |
 //! | [`secret`] | une valeur qui ne peut pas atterrir dans un journal |
 //! | [`scrutation`] | réception sans domaine ni TLS, pour éprouver le bot en vrai |
 //! | [`telegram`] | client de l'API Bot : authentification, envoi, découpage |
@@ -51,6 +53,7 @@ pub mod admission;
 pub mod app;
 pub mod cli;
 pub mod cli_compagnon;
+pub mod cli_modele;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -59,6 +62,7 @@ pub mod fixtures;
 pub mod horloge;
 pub mod http;
 pub mod modele;
+pub mod panne;
 pub mod personnage;
 pub mod scrutation;
 pub mod secret;

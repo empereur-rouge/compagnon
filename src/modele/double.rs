@@ -166,6 +166,7 @@ impl ClientModele for ModeleDouble {
                 texte,
                 modele: "double-de-test".to_owned(),
                 duree,
+                tronquee: false,
             })
         })
     }
