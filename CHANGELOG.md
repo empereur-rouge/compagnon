@@ -5,7 +5,7 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
-## [0.11.0] - Unreleased
+## [0.11.0] - 2026-09-06
 
 Revue `/simplify` de la phase 1.3, premier volet : les garanties que la phase affirmait et ne
 tenait pas. Chacune reproduite sur un PostgreSQL réel avant correctif.
@@ -88,7 +88,7 @@ tenait pas. Chacune reproduite sur un PostgreSQL réel avant correctif.
   production applique. C'est le défaut que `db::personnages` documente comme déjà survenu, revenu
   par la porte des tests.
 
-## [0.10.0] - Unreleased
+## [0.10.0] - 2026-09-06
 
 Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
 
@@ -709,6 +709,8 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.11.0 | 2026-09-06 | revue 1.3 — garanties mesurées, duplications supprimées |
+| 0.10.0 | 2026-09-06 | 1.3 — client modèle, registre des coûts, le compagnon répond |
 | 0.9.1 | 2026-09-05 | écritures partagées, filtre actif éprouvé |
 | 0.9.0 | 2026-09-05 | revue 1.2 — garanties sur le texte |
 | 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |
