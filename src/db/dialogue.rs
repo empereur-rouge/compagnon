@@ -152,6 +152,20 @@ impl Auteur {
 /// `identifiant_telegram` est celui du message chez Telegram, quand il est connu : il permet de
 /// relier une ligne d'ici à ce que l'utilisateur voit, ce dont un signalement a besoin.
 ///
+/// # Pourquoi l'écriture est idempotente
+///
+/// Une tâche reprise repasse par le début : sans cela, le message entrant était réinscrit à
+/// chaque tentative. Mesuré sur un modèle qui expire, `messages` finissait avec **trois copies**
+/// de ce que la personne avait écrit une fois.
+///
+/// La conséquence immédiate est mineure. Celle de la phase 2 ne l'est pas : c'est cette table
+/// qui composera l'historique envoyé au modèle, et un incident réseau d'aujourd'hui deviendrait
+/// un tour de conversation dupliqué des semaines plus tard.
+///
+/// Telegram fournit la clé d'idempotence — l'identifiant du message. Les messages du compagnon
+/// n'en ont pas tant qu'ils ne sont pas partis, d'où l'index partiel : eux ne conflictent
+/// jamais, et c'est voulu.
+///
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si l'écriture échoue.
@@ -164,17 +178,37 @@ pub async fn inscrire_message(
 ) -> Result<Uuid, ErreurBase> {
     let mut tx = pool.begin().await?;
 
-    let id: Uuid = sqlx::query_scalar(
+    let deja_vu: Option<Uuid> = sqlx::query_scalar(
         "insert into messages (conversation_id, role, contenu, identifiant_telegram)
          values ($1, $2, $3, $4)
+         on conflict (conversation_id, identifiant_telegram)
+             where identifiant_telegram is not null
+         do nothing
          returning id",
     )
     .bind(conversation_id)
     .bind(auteur.en_sql())
     .bind(contenu)
     .bind(identifiant_telegram)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+
+    // `do nothing` ne rend aucune ligne sur conflit : il faut alors relire celle qui existe.
+    // Rendre l'identifiant de la ligne déjà présente plutôt qu'une erreur est ce qui fait de
+    // la reprise une opération sans effet, et non un échec.
+    let id = match deja_vu {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar(
+                "select id from messages
+                  where conversation_id = $1 and identifiant_telegram = $2",
+            )
+            .bind(conversation_id)
+            .bind(identifiant_telegram)
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
 
     // Dans la même transaction que le message : `dernier_message_le` sert à décider quand le
     // compagnon reprend l'initiative (phase 2). S'il pouvait diverger du dernier message réel,

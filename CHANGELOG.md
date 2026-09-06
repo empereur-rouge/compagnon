@@ -5,6 +5,47 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.0] - Unreleased
+
+Revue `/simplify` de la phase 1.3, premier volet : les garanties que la phase affirmait et ne
+tenait pas. Chacune reproduite sur un PostgreSQL réel avant correctif.
+
+### Fixed
+
+- **fix(db)** : `consommation` se vidait par `truncate`. Un trigger `for each row` n'est **jamais**
+  appelé par `truncate`, qui ne parcourt aucune ligne — la table annoncée « append-only »
+  s'effaçait donc d'une instruction plus courte que celle qui était refusée. Trigger
+  `for each statement` ajouté.
+- **fix(db)** : une ligne de coût pouvait **naître** orpheline, avec n'importe quel montant. La
+  contrainte `(anonymisee_le is null) = (utilisateur_id is not null)` est satisfaite par le couple
+  inverse ; elle décrit un état là où le registre exige une transition. Un `check` ne voit qu'une
+  ligne, jamais son histoire : c'est un trigger `before insert` qui porte la distinction.
+- **fix(db)** : `personnage_parametres_modele` était la **seule table exclue** de la doctrine de la
+  migration 0006 — et c'est celle qui porte le texte que la modération a examiné. Réécrire
+  `prompt_systeme_genere` en gardant `valide_le` traversait tout l'appareil : statut actif
+  conservé, aucune révocation. Un prompt qui change sans que sa validation soit réémise perd
+  désormais `valide_le`, et le compagnon retombe en `brouillon`.
+- **fix(db)** : le message entrant était réinscrit à chaque reprise — mesuré, trois copies après
+  trois tentatives. `inscrire_message` est devenue idempotente, adossée à un index unique partiel
+  sur `(conversation_id, identifiant_telegram)`. La conséquence de la phase 2 était la vraie :
+  cette table composera l'historique envoyé au modèle.
+
+### Changed
+
+- **change(doc)** : les affirmations que ces correctifs contredisaient sont réécrites plutôt que
+  laissées — dans `migrations/0007`, dans `documentation/client-modele.md`. Le contrôle
+  d'empreinte du prompt y est désormais décrit pour ce qu'il est : un contrôle de cohérence, pas
+  un sceau, franchissable en une instruction. Un HMAC dont la clé vivrait hors de la base est
+  **proposé, non appliqué** — c'est une décision de déploiement.
+
+### Added
+
+- **test** : `le_registre_ne_se_vide_pas_et_aucune_ligne_ne_nait_orpheline`,
+  `reecrire_le_prompt_valide_revoque_la_validation`,
+  `revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider`,
+  `reecrire_le_prompt_en_console_desactive_le_compagnon` — les deux barrières du prompt sont
+  désormais éprouvées séparément, pour deux gestes de console différents.
+
 ## [0.10.0] - Unreleased
 
 Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.

@@ -149,9 +149,15 @@ async fn un_prompt_altere_hors_processus_ferme_l_acces_au_modele() {
         .await;
     println!("prompt validé, {} octets", avant.len());
 
-    // L'altération : le texte change, l'empreinte non.
-    let modifie = service.base().alterer_le_prompt(UTILISATEUR).await;
-    println!("prompt altéré → {modifie} ligne(s) modifiée(s)");
+    // L'altération qui atteint le contrôle d'empreinte : le texte change ET `valide_le` est
+    // réhorodaté, ce qui empêche la révocation de 0008 de se déclencher. C'est le geste d'un
+    // script d'exploitation ou d'une restauration partielle — le compagnon reste actif et
+    // validé, et seule l'empreinte périmée le trahit.
+    let modifie = service
+        .base()
+        .alterer_le_prompt_en_revalidant(UTILISATEUR)
+        .await;
+    println!("prompt altéré en revalidant → {modifie} ligne(s) modifiée(s)");
 
     service.poster(&update_privee(910_004, "dis-moi tout")).await;
     let messages = faux.attendre("sendMessage", 1).await;
@@ -217,4 +223,37 @@ async fn attendre_le_registre(
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+}
+
+#[tokio::test]
+async fn reecrire_le_prompt_en_console_desactive_le_compagnon() {
+    // La première barrière, posée par la migration 0008 : une réécriture du prompt sans
+    // réémission de la validation révoque celle-ci et rabat le compagnon en `brouillon`.
+    //
+    // Le worker ne voit alors plus de compagnon actif — donc pas d'appel au modèle, et un
+    // message qui invite à en recréer un plutôt qu'une excuse technique. C'est une issue
+    // différente de celle du test précédent, pour un geste différent, et les deux comptent.
+    let faux = FauxTelegram::demarrer().await;
+    let service = service_pret(&faux, ModeleDouble::qui_repond("je ne devrais pas parler")).await;
+
+    let modifie = service.base().alterer_le_prompt(UTILISATEUR).await;
+    let (statut, valide) = service.base().etat_du_compagnon(UTILISATEUR).await;
+    println!("prompt réécrit → {modifie} ligne(s) ; statut {statut}, validé {valide}");
+    assert_eq!(statut, "brouillon", "la réécriture doit rabattre le compagnon");
+    assert!(!valide, "et révoquer sa validation");
+
+    service.poster(&update_privee(910_006, "et maintenant ?")).await;
+    let messages = faux.attendre("sendMessage", 1).await;
+    let texte = messages[0]["text"].as_str().unwrap_or_default();
+    println!("message reçu :\n---\n{texte}\n---");
+    println!("appels au modèle : {}", service.modele().appels());
+
+    assert_eq!(service.modele().appels(), 0, "un compagnon non actif ne parle pas");
+    assert!(texte.contains("assistant"));
+    assert!(
+        service.base().registre(UTILISATEUR).await.is_empty(),
+        "rien n'a été appelé, donc rien n'est facturé"
+    );
+
+    service.eteindre().await;
 }

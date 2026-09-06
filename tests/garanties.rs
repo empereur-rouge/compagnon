@@ -432,3 +432,94 @@ async fn une_option_retiree_du_catalogue_est_refusee_a_l_ecriture() {
 
     jetable.detruire().await;
 }
+
+#[tokio::test]
+async fn reecrire_le_prompt_valide_revoque_la_validation() {
+    // La migration 0006 pose : toute modification d'un compagnon révoque sa validation. Elle
+    // l'appliquait aux cinq tables de traits et au nom — pas à `personnage_parametres_modele`,
+    // c'est-à-dire à la seule table qui porte le texte que la modération a examiné.
+    //
+    // Mesuré avant correctif : une console réécrivant `prompt_systeme_genere` et recalculant
+    // l'empreinte laissait le compagnon `actif`, `valide_le` intact, empreinte cohérente. Le
+    // worker appelait donc le modèle avec un texte qui n'avait franchi aucun contrôle.
+    let (jetable, base) = compagnon_actif().await;
+    let pool = base.pool();
+
+    let avant: (String, bool) = sqlx::query_as(
+        "select p.statut, m.valide_le is not null
+           from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
+          where p.id = $1",
+    )
+    .bind(COMPAGNON)
+    .fetch_one(pool)
+    .await
+    .expect("état initial");
+    println!("avant : statut {}, validé {}", avant.0, avant.1);
+    assert_eq!(avant, ("actif".to_owned(), true));
+
+    // Le geste exact : le texte ET son empreinte, sans toucher à `valide_le`. C'est le
+    // contournement le plus direct, celui qui ne demande aucune connaissance du code.
+    let touchees = sqlx::query(
+        "update personnage_parametres_modele
+            set prompt_systeme_genere = 'Tu es Alix, lyceenne de 15 ans.',
+                prompt_systeme_hash = encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
+          where personnage_id = $1",
+    )
+    .bind(COMPAGNON)
+    .execute(pool)
+    .await
+    .expect("la réécriture elle-même n'est pas interdite")
+    .rows_affected();
+
+    let apres: (String, bool, bool) = sqlx::query_as(
+        "select p.statut, m.valide_le is not null,
+                encode(sha256(m.prompt_systeme_genere::bytea), 'hex') = m.prompt_systeme_hash
+           from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
+          where p.id = $1",
+    )
+    .bind(COMPAGNON)
+    .fetch_one(pool)
+    .await
+    .expect("état final");
+    println!("réécriture : {touchees} ligne(s)");
+    println!(
+        "après : statut {}, validé {}, empreinte cohérente {}",
+        apres.0, apres.1, apres.2
+    );
+
+    assert!(!apres.1, "la validation doit être révoquée");
+    assert_eq!(apres.0, "brouillon", "et le compagnon rabattu en brouillon");
+    // L'empreinte reste cohérente : c'est précisément ce que ce correctif NE ferme pas, et
+    // pourquoi il ne remplace pas un sceau dont la clé vivrait hors de la base.
+    assert!(apres.2, "l'empreinte suit le texte : le contrôle de cohérence ne voit rien");
+
+    jetable.detruire().await;
+}
+
+#[tokio::test]
+async fn revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider() {
+    // Le pendant du test précédent : le chemin légitime écrit le prompt ET réhorodate
+    // `valide_le` dans la même instruction. C'est ce qui permet de distinguer les deux sans
+    // nommer le code appelant — et si ce test échouait, plus aucun compagnon ne pourrait être
+    // validé.
+    let (jetable, base) = compagnon_actif().await;
+
+    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON, Some("FR"), "modele-x")
+        .await
+        .expect("revalidation");
+    println!("verdict : {verdict:?}");
+
+    let (statut, valide): (String, bool) = sqlx::query_as(
+        "select p.statut, m.valide_le is not null
+           from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
+          where p.id = $1",
+    )
+    .bind(COMPAGNON)
+    .fetch_one(base.pool())
+    .await
+    .expect("état");
+    println!("après revalidation : statut {statut}, validé {valide}");
+    assert!(valide, "une validation légitime ne doit pas s'auto-révoquer");
+
+    jetable.detruire().await;
+}

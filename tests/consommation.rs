@@ -258,3 +258,48 @@ fn message<T>(resultat: &Result<T, sqlx::Error>) -> String {
         Err(erreur) => format!("refusé — {erreur}"),
     }
 }
+
+#[tokio::test]
+async fn le_registre_ne_se_vide_pas_et_aucune_ligne_ne_nait_orpheline() {
+    // Deux chemins que la migration 0007 laissait ouverts, mesurés avant correctif :
+    //
+    //   truncate consommation;                       → TRUNCATE TABLE, 0 ligne restante
+    //   insert … (null, now(), …, 9.999999, 'ok');   → INSERT 0 1
+    //
+    // Le premier parce qu'un trigger `for each row` n'est jamais appelé par `truncate`, qui ne
+    // parcourt aucune ligne. Le second parce que la contrainte `(anonymisee_le is null) =
+    // (utilisateur_id is not null)` est satisfaite par le couple inverse — elle décrit un état
+    // et le registre a besoin d'une transition.
+    let base = base_prete().await;
+    consommation::inscrire(base.pool(), &appel(Decimal::new(247, 6)))
+        .await
+        .expect("ligne inscrite");
+
+    let vidage = sqlx::query("truncate consommation")
+        .execute(base.pool())
+        .await;
+    let orpheline = sqlx::query(
+        "insert into consommation
+             (utilisateur_id, anonymisee_le, type, origine, fournisseur, modele,
+              cout_fournisseur_eur, statut)
+         values (null, now(), 'message', 'reponse', 'x', 'y', 9.999999, 'ok')",
+    )
+    .execute(base.pool())
+    .await;
+
+    println!("truncate          : {}", message(&vidage));
+    println!("ligne orpheline   : {}", message(&orpheline));
+    assert!(vidage.is_err(), "un registre ne se vide pas");
+    assert!(orpheline.is_err(), "une ligne naît rattachée");
+
+    let (lignes, total): (i64, Decimal) =
+        sqlx::query_as("select count(*), coalesce(sum(cout_fournisseur_eur), 0) from consommation")
+            .fetch_one(base.pool())
+            .await
+            .expect("registre relu");
+    println!("registre après les deux tentatives : {lignes} ligne(s), {total} €");
+    assert_eq!(lignes, 1);
+    assert_eq!(total, Decimal::new(247, 6));
+
+    base.detruire().await;
+}

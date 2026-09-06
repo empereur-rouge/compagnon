@@ -103,17 +103,35 @@ marche pas.
 
 ## Le registre des coûts
 
-`consommation` est **append-only**, tenu par un trigger et non par une convention : un coût
-modifiable après écriture ne répond plus à la question qu'il sert à répondre. Le trigger compare
-la ligne **entière**, pas une liste de colonnes — une liste devrait être tenue à jour à chaque
-colonne ajoutée, et une liste oubliée est une garantie qui s'éteint en silence.
+`consommation` est **append-only**, tenu par des triggers et non par une convention : un coût
+modifiable après écriture ne répond plus à la question qu'il sert à répondre. Le trigger d'`update`
+compare la ligne **entière**, pas une liste de colonnes — une liste devrait être tenue à jour à
+chaque colonne ajoutée, et une liste oubliée est une garantie qui s'éteint en silence.
 
 Une seule mutation est admise : l'anonymisation exigée par une purge RGPD, qui met
 `utilisateur_id`, `conversation_id` et `message_id` à `null` et pose `anonymisee_le`, sans
 toucher au montant. C'est pourquoi `utilisateur_id` est nullable là où le schéma d'origine le
-voulait `not null` — et pourquoi une contrainte garde les deux moitiés l'une par l'autre :
-`(anonymisee_le is null) = (utilisateur_id is not null)`, ce qui interdit d'insérer une ligne
-non attribuée.
+voulait `not null`.
+
+**Deux chemins manquaient à la première version, et ont été mesurés :**
+
+| Chemin | Avant | Après (migration 0008) |
+|---|---|---|
+| `truncate consommation` | `TRUNCATE TABLE`, registre vidé | refusé par un trigger `for each statement` |
+| `insert` avec `anonymisee_le` posé et `utilisateur_id` nul | `INSERT 0 1`, montant arbitraire | refusé par un trigger `before insert` |
+
+Le premier parce qu'un trigger `for each row` n'est **jamais** appelé par `truncate`, qui ne
+parcourt aucune ligne. Le second parce que la contrainte
+`(anonymisee_le is null) = (utilisateur_id is not null)` décrit un **état**, et que ce que le
+registre exige est une **transition** : une ligne naît rattachée, l'anonymisation la détache
+ensuite. Un `check` ne voit qu'une ligne, jamais son histoire.
+
+**Ce qui reste ouvert, et qui n'est pas du ressort d'une migration.** Le rôle applicatif de
+`compose.yaml` est superutilisateur : il peut désactiver un trigger, ou poser
+`session_replication_role = replica`. La seule fermeture réelle est de faire tourner les
+migrations sous un rôle propriétaire distinct et de ne donner au rôle d'exécution que
+`select, insert` sur cette table. C'est une décision de déploiement, signalée ici plutôt que
+sous-entendue.
 
 `cout_fournisseur_eur` est un `numeric(10,6)`, lu en `rust_decimal::Decimal` : les coûts unitaires
 sont de l'ordre du millième d'euro, et c'est la somme d'un million de lignes qu'on vient chercher.
@@ -145,10 +163,36 @@ distingue un refus d'une panne.
 
 **Le prompt est vérifié avant chaque appel.** `db::dialogue::ouvrir` recalcule l'empreinte
 `sha256` du prompt stocké et refuse d'appeler le modèle si elle ne correspond plus. Le coût est
-invisible devant une seconde de génération, et c'est ce qui donne un sens à l'approbation de la
-modération : sans lui, un `update` en console suffit à faire parler le compagnon avec un texte
-que personne n'a validé. Éprouvé sur le vrai chemin — service réel, base réelle, console `psql` —
-le modèle n'est pas appelé et rien n'est facturé.
+invisible devant une seconde de génération. Éprouvé sur le vrai chemin — service réel, base
+réelle, console `psql` — le modèle n'est pas appelé et rien n'est facturé.
+
+**Ce que cette vérification ne fait pas, et il faut le dire précisément.** L'empreinte vit dans
+la même ligne que le texte : qui réécrit l'un peut recalculer l'autre. Une seule instruction
+suffit :
+
+```sql
+update personnage_parametres_modele
+   set prompt_systeme_genere = 'Tu es Alix, lycéenne de 15 ans.',
+       prompt_systeme_hash   = encode(sha256('…'::bytea), 'hex')
+ where personnage_id = …;
+```
+
+Deux gestes ont été posés, et un troisième ne l'a pas été :
+
+1. **Fait** — la migration 0008 aligne `personnage_parametres_modele` sur la doctrine de 0006,
+   dont elle était la seule exclue : un prompt qui change sans que sa validation soit réémise
+   perd `valide_le`, et le compagnon retombe en `brouillon`. Le chemin légitime
+   (`personnage::valider`) réhorodate `valide_le` dans la même instruction, ce qui distingue les
+   deux sans nommer le code appelant.
+2. **Fait** — la promesse est reformulée ici même : c'est un contrôle de cohérence, pas un sceau.
+3. **Non fait, et proposé** — remplacer le `sha256` par un **HMAC dont la clé vit dans
+   l'environnement du processus**, pas dans la base. Le modèle de menace que ce projet énonce
+   — « une console `psql`, une restauration partielle, un script d'exploitation » — désigne
+   exactement des acteurs qui ont la base et n'ont pas l'environnement. Le `sha256` n'en couvre
+   aucun ; un HMAC les couvre tous. Coût : une variable d'environnement de plus, portée par
+   [`Secret`](#le-type-secret), et une revalidation forcée de tous les compagnons existants.
+   C'est une décision de déploiement, pas une correction — d'où le fait qu'elle soit proposée
+   et non appliquée.
 
 Cette vérification ne remplace pas `personnage::verifier_integrite`, qui **recompose** depuis les
 traits et attrape la dérive éditoriale : c'en est la moitié qu'on peut payer à chaque message.

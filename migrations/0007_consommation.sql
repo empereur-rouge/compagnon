@@ -68,9 +68,14 @@ create table consommation (
     -- Quand la purge RGPD a détaché la ligne. Null tant qu'elle est rattachée.
     anonymisee_le           timestamptz,
 
-    -- Les deux moitiés se gardent l'une l'autre. Sans elle, `utilisateur_id` nullable laisserait
-    -- passer une insertion non attribuée — exactement ce que le `not null` du schéma d'origine
-    -- empêchait, et qu'on ne veut pas perdre en le retirant.
+    -- Les deux moitiés se gardent l'une l'autre : une ligne rattachée n'a pas de date
+    -- d'anonymisation, une ligne anonymisée n'a plus d'utilisateur.
+    --
+    -- ATTENTION — cette contrainte ne dit RIEN de l'insertion. Le couple (anonymisee_le
+    -- renseigné, utilisateur_id nul) la satisfait, et une ligne pouvait donc naître orpheline
+    -- avec n'importe quel montant. Mesuré, et corrigé par la migration 0008 : c'est un trigger
+    -- `before insert` qui l'interdit, parce que la distinction est une transition et non un
+    -- état, ce qu'un `check` ne peut pas voir.
     constraint consommation_anonymisation_coherente check (
         (anonymisee_le is null) = (utilisateur_id is not null)
     )
