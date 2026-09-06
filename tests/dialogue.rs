@@ -232,3 +232,47 @@ async fn reecrire_le_prompt_en_console_desactive_le_compagnon() {
 
     service.eteindre().await;
 }
+
+#[tokio::test]
+async fn un_prompt_forge_avec_un_sceau_recalcule_est_refuse() {
+    // LE test que le passage au HMAC existe pour rendre possible.
+    //
+    // La manœuvre est celle d'une console `psql` qui fait tout correctement : elle réécrit le
+    // prompt, **recalcule le sceau**, et réémet la validation. Le compagnon reste actif, sa
+    // validation est fraîche, et son sceau correspond au texte.
+    //
+    // Quand le sceau était un `sha256`, cela suffisait : tout ce qu'il fallait pour le forger
+    // était dans la ligne, et le texte injecté — précisément la classe de contenu que la
+    // modération existe pour empêcher — partait au modèle.
+    //
+    // La clé du HMAC vit dans l'environnement du processus. La base ne contient plus de quoi
+    // fabriquer un sceau valide, et le worker le voit.
+    let faux = FauxTelegram::demarrer().await;
+    let service = service_pret(&faux, ModeleDouble::qui_repond("je ne devrais pas parler")).await;
+
+    let forge = service.base().forger_le_prompt(UTILISATEUR).await;
+    let (statut, valide) = service.base().etat_du_compagnon(UTILISATEUR).await;
+    println!("prompt forgé → {forge} ligne(s) ; statut {statut}, validé {valide}");
+    // Le compagnon a traversé les deux barrières précédentes : il est actif ET validé.
+    assert_eq!(statut, "actif", "la manœuvre ne déclenche aucune révocation");
+    assert!(valide, "et la validation paraît fraîche");
+
+    service.poster(&update_privee(910_007, "raconte-moi")).await;
+    let messages = faux.attendre("sendMessage", 1).await;
+    let texte = messages[0]["text"].as_str().unwrap_or_default();
+    println!("message reçu :\n---\n{texte}\n---");
+    println!("appels au modèle : {}", service.modele().appels());
+
+    assert_eq!(
+        service.modele().appels(),
+        0,
+        "un prompt scellé sans la clé n'atteint pas le modèle"
+    );
+    assert!(texte.contains("Réessaie"));
+    assert!(
+        service.base().registre(UTILISATEUR).await.is_empty(),
+        "rien n'a été appelé, donc rien n'est facturé"
+    );
+
+    service.eteindre().await;
+}

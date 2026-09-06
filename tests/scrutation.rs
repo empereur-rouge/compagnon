@@ -31,7 +31,7 @@ async fn lancer(
     let modele = Arc::new(ModeleDouble::qui_repete());
     let (arret, reception) = oneshot::channel();
     let tache = tokio::spawn(async move {
-        app::scruter(&config, modele, async move {
+        app::scruter(&config, modele, Arc::new(compagnon::fixtures::sceau_de_test()), async move {
             let _ = reception.await;
         })
         .await

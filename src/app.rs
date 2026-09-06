@@ -32,6 +32,7 @@ use crate::config::Config;
 use crate::db::{Base, ErreurBase};
 use crate::horloge;
 use crate::modele::ClientModele;
+use crate::personnage::sceau::Sceau;
 use crate::http::{self, EtatApp};
 use crate::scrutation;
 use crate::telegram::envoi::ErreurEnvoi;
@@ -109,6 +110,7 @@ pub struct Prepare {
 pub async fn preparer(
     config: &Config,
     modele: Arc<dyn ClientModele>,
+    sceau: Arc<Sceau>,
 ) -> Result<Prepare, ErreurDemarrage> {
     let canal = Arc::new(Canal::new(config)?);
 
@@ -142,7 +144,7 @@ pub async fn preparer(
     // éphémère que seul le système connaît, et c'est celui-là qu'il faut annoncer.
     let adresse = ecoute.local_addr().map_err(echec)?;
 
-    let equipe = Equipe::lancer(&base, &canal, &modele);
+    let equipe = Equipe::lancer(&base, &canal, &modele, &sceau);
 
     let routeur = http::routeur(EtatApp {
         canal,
@@ -205,9 +207,10 @@ impl Prepare {
 pub async fn servir(
     config: &Config,
     modele: Arc<dyn ClientModele>,
+    sceau: Arc<Sceau>,
     arret: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ErreurDemarrage> {
-    preparer(config, modele).await?.servir(arret).await
+    preparer(config, modele, sceau).await?.servir(arret).await
 }
 
 /// Écoute Telegram par scrutation, sans servir de webhook.
@@ -230,6 +233,7 @@ pub async fn servir(
 pub async fn scruter(
     config: &Config,
     modele: Arc<dyn ClientModele>,
+    sceau: Arc<Sceau>,
     arret: impl Future<Output = ()> + Send,
 ) -> Result<(), ErreurDemarrage> {
     let canal = Canal::new(config)?;
@@ -249,7 +253,7 @@ pub async fn scruter(
     tracing::info!(base = %crate::config::masquer_url(config.url_base.exposer()), "base jointe et migrée");
 
     let canal = Arc::new(canal);
-    let equipe = Equipe::lancer(&base, &canal, &modele);
+    let equipe = Equipe::lancer(&base, &canal, &modele, &sceau);
 
     scrutation::tourner(&canal, &base, arret).await;
 

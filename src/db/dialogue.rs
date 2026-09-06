@@ -26,6 +26,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::ErreurBase;
+use crate::personnage::sceau::Sceau;
 
 /// À qui l'utilisateur parle, et avec quel texte.
 #[derive(Debug, Clone)]
@@ -79,7 +80,11 @@ pub enum Interlocuteur {
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si une lecture ou l'ouverture du fil échoue.
-pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur, ErreurBase> {
+pub async fn ouvrir(
+    pool: &PgPool,
+    utilisateur_id: Uuid,
+    sceau: &Sceau,
+) -> Result<Interlocuteur, ErreurBase> {
     // Jointe à la même requête plutôt que demandée séparément : c'est ce qui empêche un futur
     // appelant d'ouvrir un compagnon sans avoir vérifié l'âge. Le coût est nul — la ligne est
     // déjà lue par la clé étrangère.
@@ -91,7 +96,7 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur
     // découle du premier (migration 0004), mais le worker est le dernier à pouvoir refuser
     // avant que le texte parte au modèle, et une garantie tenue deux fois ne coûte rien ici.
     let trouve: Option<(Uuid, String, String)> = sqlx::query_as(
-        "select p.id, m.prompt_systeme_genere, m.prompt_systeme_hash
+        "select p.id, m.prompt_systeme_genere, m.prompt_systeme_sceau
            from personnages p
            join personnage_parametres_modele m on m.personnage_id = p.id
           where p.utilisateur_id = $1
@@ -107,7 +112,7 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur
         return Ok(Interlocuteur::Aucun);
     };
 
-    if !crate::personnage::sceau_valide(&prompt_systeme, &empreinte) {
+    if !sceau.verifier(&prompt_systeme, &empreinte) {
         return Ok(Interlocuteur::PromptAltere { personnage_id });
     }
 

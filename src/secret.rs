@@ -71,6 +71,32 @@ impl fmt::Debug for Secret {
 // partout où une chaîne l'est, et ferait rentrer par la fenêtre ce que l'absence de `Display`
 // fait sortir par la porte.
 
+/// Compare deux suites d'octets en un temps qui ne dépend pas de l'endroit où elles diffèrent.
+///
+/// # Pourquoi ce n'est pas `==`
+///
+/// Une comparaison ordinaire s'arrête au premier octet différent. Qui mesure des milliers de
+/// réponses peut alors reconstituer le secret octet par octet. La boucle ici parcourt toujours
+/// toute la longueur.
+///
+/// Ce qu'elle ne masque pas, c'est la **longueur** de la valeur présentée : les tailles sont
+/// comparées d'abord. C'est assumé — la longueur d'un secret de déploiement est une constante,
+/// pas une information que sa découverte rendrait exploitable.
+///
+/// Vit ici plutôt que dans `telegram` : comparer un secret sans fuir par le temps n'a rien de
+/// spécifique à un canal, et le sceau du prompt en a besoin pour la même raison.
+#[must_use]
+pub fn egal_temps_constant(presente: &[u8], attendu: &[u8]) -> bool {
+    if presente.len() != attendu.len() {
+        return false;
+    }
+    presente
+        .iter()
+        .zip(attendu)
+        .fold(0_u8, |ecart, (a, b)| ecart | (a ^ b))
+        == 0
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

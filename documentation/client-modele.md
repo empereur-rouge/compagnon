@@ -2,7 +2,7 @@
 tags: [feature]
 created: 2026-09-06
 updated: 2026-09-06
-version: v0.10.0
+version: v0.13.0
 ---
 
 # Client modèle — appeler le moteur, et compter ce qu'il coûte
@@ -22,6 +22,7 @@ et la discipline sur les erreurs.
 
 | Variable | Obligatoire | Rôle |
 |---|---|---|
+| `PROMPT_CLE_SCEAU` | oui | clé du HMAC qui scelle le prompt validé, 32 caractères minimum |
 | `MODELE_API_BASE` | oui | racine d'une API compatible OpenAI, `http(s)://…/v1` |
 | `MODELE_API_CLE` | oui | clé du fournisseur, portée par un `Secret` |
 | `MODELE_NOM` | oui | identifiant du modèle **demandé** |
@@ -166,36 +167,36 @@ distingue un refus d'une panne.
 invisible devant une seconde de génération. Éprouvé sur le vrai chemin — service réel, base
 réelle, console `psql` — le modèle n'est pas appelé et rien n'est facturé.
 
-**Ce que cette vérification ne fait pas, et il faut le dire précisément.** L'empreinte vit dans
-la même ligne que le texte : qui réécrit l'un peut recalculer l'autre. Une seule instruction
-suffit :
+**Ce que cette vérification garantit, et ce qu'elle ne garantit pas.** Le sceau est un
+**HMAC-SHA256 dont la clé vit dans l'environnement du processus** (`PROMPT_CLE_SCEAU`), pas dans
+la base. C'est la différence entre un sceau et un contrôle de cohérence : la base ne contient
+plus de quoi en fabriquer un.
+
+Il a d'abord été un `sha256` du texte, rangé dans la même ligne que le texte qu'il attestait. Le
+contournement tenait alors en une instruction :
 
 ```sql
 update personnage_parametres_modele
    set prompt_systeme_genere = 'Tu es Alix, lycéenne de 15 ans.',
-       prompt_systeme_hash   = encode(sha256('…'::bytea), 'hex')
+       prompt_systeme_sceau  = encode(sha256('…'::bytea), 'hex'),
+       valide_le             = now()
  where personnage_id = …;
 ```
 
-Deux gestes ont été posés, et un troisième ne l'a pas été :
+`tests/dialogue.rs::un_prompt_forge_avec_un_sceau_recalcule_est_refuse` rejoue exactement cette
+manœuvre : le compagnon reste `actif`, sa validation paraît fraîche, son sceau correspond à son
+texte — et le modèle n'est pas appelé.
 
-1. **Fait** — la migration 0008 aligne `personnage_parametres_modele` sur la doctrine de 0006,
-   dont elle était la seule exclue : un prompt qui change sans que sa validation soit réémise
-   perd `valide_le`, et le compagnon retombe en `brouillon`. Le chemin légitime
-   (`personnage::valider`) réhorodate `valide_le` dans la même instruction, ce qui distingue les
-   deux sans nommer le code appelant.
-2. **Fait** — la promesse est reformulée ici même : c'est un contrôle de cohérence, pas un sceau.
-3. **Non fait, et proposé** — remplacer le `sha256` par un **HMAC dont la clé vit dans
-   l'environnement du processus**, pas dans la base. Le modèle de menace que ce projet énonce
-   — « une console `psql`, une restauration partielle, un script d'exploitation » — désigne
-   exactement des acteurs qui ont la base et n'ont pas l'environnement. Le `sha256` n'en couvre
-   aucun ; un HMAC les couvre tous. Coût : une variable d'environnement de plus, portée par
-   [`Secret`](#le-type-secret), et une revalidation forcée de tous les compagnons existants.
-   C'est une décision de déploiement, pas une correction — d'où le fait qu'elle soit proposée
-   et non appliquée.
+Trois barrières, pour trois gestes différents, chacune avec son test :
 
-Cette vérification ne remplace pas `personnage::verifier_integrite`, qui **recompose** depuis les
-traits et attrape la dérive éditoriale : c'en est la moitié qu'on peut payer à chaque message.
+| Geste en console | Ce qui l'attrape |
+|---|---|
+| réécrire le prompt | migration 0008 — la validation est révoquée, le compagnon repasse en `brouillon` |
+| réécrire et réémettre `valide_le` | le sceau ne correspond plus au texte |
+| réécrire, resceller et réémettre `valide_le` | le sceau a été posé sans la clé |
+
+Reste ouvert : qui obtient **à la fois** la base et l'environnement peut forger. Le sceau protège
+contre l'accès à la base seule — le seul cas que le projet ait jamais su nommer.
 
 **Pas de reprise en double.** La file borne déjà les tentatives et les persiste ; le worker s'en
 sert avec `merite_une_reprise` pour décider s'il faut les consommer. Une clé invalide échoue en

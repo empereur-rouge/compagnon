@@ -37,6 +37,7 @@ use crate::db::dialogue::{Auteur, Interlocuteur};
 use crate::db::{Base, consommation, dialogue, file};
 use crate::error::ErrorCode;
 use crate::modele::{ClientModele, ContexteConversation, ErreurModele, Role, Tour};
+use crate::personnage::sceau::Sceau;
 use crate::telegram::Canal;
 use crate::telegram::envoi::Action;
 use crate::telegram::types::Recu;
@@ -126,7 +127,12 @@ impl Equipe {
     /// les tests injectent un double qui fabrique les pannes du fournisseur, et le worker est
     /// alors éprouvé sur des échecs qui, en production, n'arrivent qu'au pire moment.
     #[must_use]
-    pub fn lancer(base: &Base, canal: &Arc<Canal>, modele: &Arc<dyn ClientModele>) -> Self {
+    pub fn lancer(
+        base: &Base,
+        canal: &Arc<Canal>,
+        modele: &Arc<dyn ClientModele>,
+        sceau: &Arc<Sceau>,
+    ) -> Self {
         let (arret, ecoute) = watch::channel(false);
         let vivants = Arc::new(AtomicUsize::new(WORKERS));
         let taches = (0..WORKERS)
@@ -135,6 +141,7 @@ impl Equipe {
                     base.clone(),
                     Arc::clone(canal),
                     Arc::clone(modele),
+                    Arc::clone(sceau),
                     ecoute.clone(),
                     numero,
                     Arc::clone(&vivants),
@@ -196,6 +203,7 @@ async fn tourner(
     base: Base,
     canal: Arc<Canal>,
     modele: Arc<dyn ClientModele>,
+    sceau: Arc<Sceau>,
     mut arret: watch::Receiver<bool>,
     numero: usize,
     vivants: Arc<AtomicUsize>,
@@ -212,7 +220,7 @@ async fn tourner(
         // se reposer, et l'attente est faite une fois, au même endroit, toujours interruptible.
         let repos = match file::prendre(base.pool(), BAIL).await {
             Ok(Some(tache)) => {
-                let issue = traiter(&base, &canal, modele.as_ref(), &tache).await;
+                let issue = traiter(&base, &canal, modele.as_ref(), &sceau, &tache).await;
                 traites += 1;
                 match issue {
                     // Rien à attendre : la file vient de prouver qu'elle a du travail.
@@ -253,6 +261,7 @@ async fn traiter(
     base: &Base,
     canal: &Canal,
     modele: &dyn ClientModele,
+    sceau: &Sceau,
     tache: &file::Tache,
 ) -> Issue {
     let Ok(recu) = serde_json::from_value::<Recu>(tache.charge_utile.clone()) else {
@@ -269,7 +278,7 @@ async fn traiter(
     // d'un compagnon actif et l'intégrité de son prompt sont désormais trois issues d'une même
     // lecture. Aucune ne peut être oubliée par un chemin futur — la phase 2 va allonger cette
     // fonction.
-    let compagnon = match dialogue::ouvrir(base.pool(), tache.utilisateur_id).await {
+    let compagnon = match dialogue::ouvrir(base.pool(), tache.utilisateur_id, sceau).await {
         Ok(Interlocuteur::Pret(compagnon)) => compagnon,
         Ok(Interlocuteur::AgeNonVerifie) => {
             tracing::info!(chat_id = recu.chat_id, "âge non vérifié, accès au moteur refusé");

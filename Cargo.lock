@@ -284,6 +284,7 @@ dependencies = [
  "chrono",
  "compagnon",
  "dotenvy",
+ "hmac",
  "reqwest",
  "rust_decimal",
  "serde",

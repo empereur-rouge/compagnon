@@ -316,7 +316,11 @@ pub async fn reprendre_avec_modele(
 ) -> EnMarche {
     let config = faux.config(&base.url);
     let modele = Arc::new(modele);
-    let prepare: Prepare = app::preparer(&config, Arc::clone(&modele) as Arc<dyn ClientModele>)
+    let prepare: Prepare = app::preparer(
+        &config,
+        Arc::clone(&modele) as Arc<dyn ClientModele>,
+        Arc::new(compagnon::fixtures::sceau_de_test()),
+    )
         .await
         .expect("le service doit démarrer contre le faux Telegram");
 
