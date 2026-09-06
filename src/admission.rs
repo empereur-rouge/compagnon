@@ -76,9 +76,17 @@ pub enum Admission {
 ///
 /// [`ErreurBase`] si la base refuse l'une des deux écritures.
 pub async fn enfiler(base: &Base, recu: &Recu) -> Result<Admission, ErreurBase> {
-    utilisateurs::assurer(base.pool(), recu.utilisateur_id, Some(&recu.prenom)).await?;
+    // La résolution `(canal, identifiant externe) → utilisateur` est le premier traitement de
+    // toute requête entrante. Au-delà de cette ligne, plus rien ne connaît Telegram : la file,
+    // le worker et le moteur de dialogue ne manipulent que l'UUID interne.
+    let utilisateur = utilisateurs::resoudre_telegram(
+        base.pool(),
+        recu.utilisateur_telegram,
+        Some(&recu.prenom),
+    )
+    .await?;
 
-    let enfilee = file::enfiler(base.pool(), recu.utilisateur_id, TACHE_MESSAGE, recu).await?;
+    let enfilee = file::enfiler(base.pool(), utilisateur, TACHE_MESSAGE, recu).await?;
     Ok(if enfilee.is_some() {
         Admission::Enfile
     } else {

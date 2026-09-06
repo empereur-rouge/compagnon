@@ -299,10 +299,7 @@ async fn une_option_retiree_du_catalogue_est_refusee_a_l_ecriture() {
     let base = Base::ouvrir(&jetable.url).await.expect("base migrée");
     let pool = base.pool();
 
-    sqlx::query("insert into utilisateurs (id) values (9)")
-        .execute(pool)
-        .await
-        .expect("utilisateur");
+    let identite = jetable.identite(UTILISATEUR).await;
 
     // Ce test était IMPOSSIBLE à écrire avant que les écritures ne quittent le module de ligne
     // de commande : elles y étaient privées. Les tests avaient donc recopié leur SQL, en
@@ -321,7 +318,7 @@ async fn une_option_retiree_du_catalogue_est_refusee_a_l_ecriture() {
     choix.insert("archetype".to_owned(), "possessif".to_owned());
 
     let mut tx = pool.begin().await.expect("transaction");
-    let compagnon = compagnon::db::personnages::creer(&mut tx, 9, "Léa")
+    let compagnon = compagnon::db::personnages::creer(&mut tx, identite, "Léa")
         .await
         .expect("création");
     let refus = compagnon::db::personnages::poser_traits(
@@ -355,7 +352,7 @@ async fn une_option_retiree_du_catalogue_est_refusee_a_l_ecriture() {
         .expect("réactivation");
 
     let mut tx = pool.begin().await.expect("transaction");
-    let compagnon = compagnon::db::personnages::creer(&mut tx, 9, "Léa")
+    let compagnon = compagnon::db::personnages::creer(&mut tx, identite, "Léa")
         .await
         .expect("création");
     compagnon::db::personnages::poser_traits(

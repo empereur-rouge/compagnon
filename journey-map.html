@@ -976,8 +976,8 @@
               "opportunity": "",
               "evidence": "",
               "frontstage": "Le message part, coche unique.",
-              "backstage": "Telegram POST /webhook. Caddy termine TLS et relaie vers bot:8080. webhook::recevoir authentifie le secret partagé en temps constant, analyse le JSON, appelle Update::extraire, puis try_send sur la file bornée et répond 200 — sans jamais parler à Telegram.",
-              "support": "Caddy, src/webhook.rs, src/telegram/mod.rs authentifier, src/telegram/types.rs extraire."
+              "backstage": "admission::enfiler résout d'abord (canal Telegram, identifiant) → utilisateur interne (UUID), en le créant au premier message, puis enfile la tâche avec cette identité. Au-delà de cette ligne, plus rien dans le service ne connaît Telegram.",
+              "support": "src/admission.rs, src/db/utilisateurs.rs, src/db/file.rs."
             }
           ]
         },

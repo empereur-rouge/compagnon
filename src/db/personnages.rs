@@ -68,7 +68,7 @@ fn faute_de_saisie(erreur: &sqlx::Error) -> bool {
 /// compagnon, l'index unique l'interdisant.
 pub async fn creer(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    utilisateur: i64,
+    utilisateur: Uuid,
     nom: &str,
 ) -> Result<Uuid, ErreurEcriture> {
     Ok(sqlx::query_scalar(

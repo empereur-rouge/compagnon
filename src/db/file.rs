@@ -41,7 +41,7 @@ pub struct Tache {
     /// Identifiant, à rendre à [`terminer`] ou [`echouer`].
     pub id: Uuid,
     /// À qui elle appartient. Sert aux journaux, et c'est la clé de sérialisation de la file.
-    pub utilisateur_id: i64,
+    pub utilisateur_id: Uuid,
     /// Le contenu, tel qu'il a été enfilé.
     pub charge_utile: serde_json::Value,
     /// Nombre de prises, celle-ci comprise. Sert à borner les reprises.
@@ -80,7 +80,7 @@ pub const EN_FILE_MAX_PAR_UTILISATEUR: i64 = 32;
 /// [`ErreurBase::ChargeUtile`] si la valeur ne se convertit pas.
 pub async fn enfiler(
     pool: &PgPool,
-    utilisateur_id: i64,
+    utilisateur_id: Uuid,
     type_tache: &str,
     charge_utile: &impl serde::Serialize,
 ) -> Result<Option<Uuid>, ErreurBase> {

@@ -221,4 +221,5 @@ précisément ce que cette phase ajoute.
 - [[transport-telegram]] — les deux portes d'entrée, qui enfilent toutes deux par `admission`.
 - [[contrat-d-erreur]] — `5001` file saturée, `9003` envoi impossible, `9004` tâche illisible.
 - [[un-assistant-par-personne]] — la cardinalité que le schéma impose.
-- [[un-seul-bot]] — pourquoi `utilisateurs.id` est l'identifiant Telegram.
+- [[identite-multi-canal]] — pourquoi `utilisateurs.id` n'est **plus** l'identifiant Telegram,
+  et ce que `file_messages.utilisateur_id` porte désormais.

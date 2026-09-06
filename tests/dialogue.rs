@@ -60,7 +60,7 @@ async fn un_modele_qui_expire_est_rejoue_puis_la_personne_est_prevenue() {
 
     // Et le registre porte trois échecs : un appel qui rate est souvent facturé quand même,
     // et un coût invisible ne se retrouve pas.
-    let lignes = service.base().registre(UTILISATEUR).await;
+    let lignes = service.base().attendre_registre(UTILISATEUR, 3).await;
     println!("registre : {lignes:?}");
     assert_eq!(lignes.len(), 3);
     assert!(lignes.iter().all(|(_, statut, _)| statut == "echec"));
@@ -186,7 +186,7 @@ async fn un_envoi_refuse_par_telegram_laisse_quand_meme_le_cout_au_registre() {
     faux.attendre("sendMessage", 1).await;
 
     // Laisser le worker aller au bout de ses reprises.
-    let lignes = attendre_le_registre(&service, 3).await;
+    let lignes = service.base().attendre_registre(UTILISATEUR, 3).await;
     println!("registre : {lignes:?}");
     println!("appels au modèle : {}", service.modele().appels());
 
@@ -198,26 +198,6 @@ async fn un_envoi_refuse_par_telegram_laisse_quand_meme_le_cout_au_registre() {
     assert_eq!(lignes[0].2, "double-de-test", "le modèle rendu, pas celui demandé");
 
     service.eteindre().await;
-}
-
-/// Attend que le registre atteigne `combien` lignes, ou échoue en disant ce qu'il contient.
-async fn attendre_le_registre(
-    service: &harnais::EnMarche,
-    combien: usize,
-) -> Vec<(String, String, String)> {
-    let debut = std::time::Instant::now();
-    loop {
-        let lignes = service.base().registre(UTILISATEUR).await;
-        if lignes.len() >= combien {
-            return lignes;
-        }
-        assert!(
-            debut.elapsed() < std::time::Duration::from_secs(10),
-            "{combien} lignes attendues au registre, {} obtenues : {lignes:?}",
-            lignes.len()
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
 }
 
 #[tokio::test]
