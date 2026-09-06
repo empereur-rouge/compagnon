@@ -49,23 +49,28 @@ async fn deux_compagnons() -> (BaseDeTest, Base, Uuid, Uuid) {
 /// la production ne construirait jamais. Les fabriques de compagnon complet, elles, passent par
 /// `db::personnages` (voir `compagnon_complet`).
 async fn poser_archetype(
-    pool: &PgPool,
+    jetable: &BaseDeTest,
     compagnon: Uuid,
     code: &str,
     role: &str,
     rang: Option<i16>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "insert into personnage_archetypes (personnage_id, archetype_id, role, rang)
-         select $1, id, $3, $4 from ref_archetypes where code = $2 and actif",
-    )
-    .bind(compagnon)
-    .bind(code)
-    .bind(role)
-    .bind(rang)
-    .execute(pool)
-    .await
-    .map(|_| ())
+    // Passe par l'écriture versionnée : sans version, le refus viendrait de la migration 0011 et
+    // non du contrôle que le test vise — un test qui passe sur le mauvais signal.
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "insert into personnage_archetypes (personnage_id, archetype_id, role, rang)
+                 select $1, id, $3, $4 from ref_archetypes where code = $2 and actif",
+            )
+            .bind(compagnon)
+            .bind(code)
+            .bind(role)
+            .bind(rang),
+        )
+        .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -93,15 +98,18 @@ async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
         "un compagnon sans prompt s'est activé"
     );
 
-    sqlx::query(
-        "insert into personnage_parametres_modele
-            (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible)
-         values ($1, 'un prompt quelconque', 'empreinte', 'modele-x')",
-    )
-    .bind(COMPAGNON_A)
-    .execute(base.pool())
-    .await
-    .expect("prompt posé");
+    jetable
+        .ecrire_avec_version(
+            COMPAGNON_A,
+            sqlx::query(
+                "insert into personnage_parametres_modele
+                    (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible)
+                 values ($1, 'un prompt quelconque', 'empreinte', 'modele-x')",
+            )
+            .bind(COMPAGNON_A),
+        )
+        .await
+        .expect("prompt posé");
 
     let non_valide = sqlx::query("update personnages set statut = 'actif' where id = $1")
         .bind(COMPAGNON_A)
@@ -120,13 +128,17 @@ async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
         "un prompt écrit mais non modéré a suffi à activer"
     );
 
-    sqlx::query(
-        "update personnage_parametres_modele set valide_le = now() where personnage_id = $1",
-    )
-    .bind(COMPAGNON_A)
-    .execute(base.pool())
-    .await
-    .expect("validation");
+    jetable
+        .ecrire_avec_version(
+            COMPAGNON_A,
+            sqlx::query(
+                "update personnage_parametres_modele set valide_le = now()
+                  where personnage_id = $1",
+            )
+            .bind(COMPAGNON_A),
+        )
+        .await
+        .expect("validation");
 
     sqlx::query("update personnages set statut = 'actif' where id = $1")
         .bind(COMPAGNON_A)
@@ -146,14 +158,14 @@ async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
 
 #[tokio::test]
 async fn la_personnalite_reste_dans_ses_bornes() {
-    let (jetable, base, _alice, _bob) = deux_compagnons().await;
+    let (jetable, _base, _alice, _bob) = deux_compagnons().await;
 
     // Un principal obligatoire, jusqu'à deux secondaires : les bornes du document, tenues à
     // l'écriture. La résolution du prompt lit cette forme et n'a pas de branche pour une autre.
-    poser_archetype(base.pool(), COMPAGNON_A, "timide", "principal", None)
+    poser_archetype(&jetable, COMPAGNON_A, "timide", "principal", None)
         .await
         .expect("le premier principal passe");
-    let second = poser_archetype(base.pool(), COMPAGNON_A, "calme", "principal", None).await;
+    let second = poser_archetype(&jetable, COMPAGNON_A, "calme", "principal", None).await;
     println!(
         "second archétype principal   -> {}",
         if second.is_err() {
@@ -167,13 +179,13 @@ async fn la_personnalite_reste_dans_ses_bornes() {
         "deux principaux : la résolution ne saurait lequel prendre"
     );
 
-    poser_archetype(base.pool(), COMPAGNON_A, "dominant", "secondaire", Some(1))
+    poser_archetype(&jetable, COMPAGNON_A, "dominant", "secondaire", Some(1))
         .await
         .expect("premier secondaire");
-    poser_archetype(base.pool(), COMPAGNON_A, "joueur", "secondaire", Some(2))
+    poser_archetype(&jetable, COMPAGNON_A, "joueur", "secondaire", Some(2))
         .await
         .expect("second secondaire");
-    let troisieme = poser_archetype(base.pool(), COMPAGNON_A, "loyal", "secondaire", Some(3)).await;
+    let troisieme = poser_archetype(&jetable, COMPAGNON_A, "loyal", "secondaire", Some(3)).await;
     println!(
         "troisième secondaire         -> {}",
         if troisieme.is_err() {
@@ -186,7 +198,7 @@ async fn la_personnalite_reste_dans_ses_bornes() {
 
     // Et les deux incohérences de forme, que la contrainte croisée attrape.
     let principal_range =
-        poser_archetype(base.pool(), COMPAGNON_B, "calme", "principal", Some(1)).await;
+        poser_archetype(&jetable, COMPAGNON_B, "calme", "principal", Some(1)).await;
     println!(
         "principal avec un rang       -> {}",
         if principal_range.is_err() {
@@ -198,7 +210,7 @@ async fn la_personnalite_reste_dans_ses_bornes() {
     assert!(principal_range.is_err());
 
     let secondaire_sans_rang =
-        poser_archetype(base.pool(), COMPAGNON_B, "loyal", "secondaire", None).await;
+        poser_archetype(&jetable, COMPAGNON_B, "loyal", "secondaire", None).await;
     println!(
         "secondaire sans rang         -> {}",
         if secondaire_sans_rang.is_err() {
@@ -252,18 +264,21 @@ async fn une_conversation_ne_peut_pas_pointer_le_compagnon_d_un_autre() {
 
 #[tokio::test]
 async fn les_bornes_de_forme_des_parametres_sont_tenues() {
-    let (jetable, base, _alice, _bob) = deux_compagnons().await;
+    let (jetable, _base, _alice, _bob) = deux_compagnons().await;
 
     // Un curseur hors [0,1] fausserait la résolution des plafonds sans qu'aucun code ne s'en
     // aperçoive : `least(1.4, plafond)` rend le plafond, donc la valeur aberrante passerait
     // inaperçue tant qu'aucun plafond n'existe.
-    let hors_bornes = sqlx::query(
-        "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-         values ($1, 'humour', 1.40)",
-    )
-    .bind(COMPAGNON_A)
-    .execute(base.pool())
-    .await;
+    let hors_bornes = jetable
+        .ecrire_avec_version(
+            COMPAGNON_A,
+            sqlx::query(
+                "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
+                 values ($1, 'humour', 1.40)",
+            )
+            .bind(COMPAGNON_A),
+        )
+        .await;
     println!(
         "curseur à 1,40               -> {}",
         if hors_bornes.is_err() {
@@ -275,13 +290,16 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
     assert!(hors_bornes.is_err());
 
     // Une fenêtre horaire à moitié renseignée n'est interprétable par personne.
-    let demi_plage = sqlx::query(
-        "insert into personnage_parametres_interaction (personnage_id, plage_horaire_debut)
-         values ($1, '09:00')",
-    )
-    .bind(COMPAGNON_A)
-    .execute(base.pool())
-    .await;
+    let demi_plage = jetable
+        .ecrire_avec_version(
+            COMPAGNON_A,
+            sqlx::query(
+                "insert into personnage_parametres_interaction (personnage_id, plage_horaire_debut)
+                 values ($1, '09:00')",
+            )
+            .bind(COMPAGNON_A),
+        )
+        .await;
     println!(
         "fenêtre horaire à moitié     -> {}",
         if demi_plage.is_err() {
@@ -293,14 +311,18 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
     assert!(demi_plage.is_err());
 
     // Et une température de modèle absurde.
-    let temperature = sqlx::query(
-        "insert into personnage_parametres_modele
-            (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible, temperature)
-         values ($1, 't', 'h', 'm', 9.00)",
-    )
-    .bind(COMPAGNON_B)
-    .execute(base.pool())
-    .await;
+    let temperature = jetable
+        .ecrire_avec_version(
+            COMPAGNON_B,
+            sqlx::query(
+                "insert into personnage_parametres_modele
+                    (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible,
+                     temperature)
+                 values ($1, 't', 'h', 'm', 9.00)",
+            )
+            .bind(COMPAGNON_B),
+        )
+        .await;
     println!(
         "température à 9,00           -> {}",
         if temperature.is_err() {
@@ -572,11 +594,15 @@ async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
     for (raison, version) in &versions {
         println!("  v{version} : {raison}");
     }
-    assert_eq!(
-        versions.len(),
-        2,
-        "chaque décision doit laisser une version"
-    );
+    // Le compte porte sur les décisions de modération, et non sur toutes les versions : depuis
+    // la migration 0011, la composition des traits en laisse une elle aussi. Compter le total
+    // ferait échouer ce test au premier écrivain ajouté, pour une raison sans rapport avec ce
+    // qu'il éprouve.
+    let decisions = versions
+        .iter()
+        .filter(|(raison, _)| raison.starts_with("moderation_"))
+        .count();
+    assert_eq!(decisions, 2, "chaque décision de modération laisse une version");
     assert!(versions.iter().any(|(r, _)| r == "moderation_validation"));
     assert!(
         versions.iter().any(|(r, _)| r == "moderation_rejet"),

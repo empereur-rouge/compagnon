@@ -104,7 +104,7 @@ async fn le_texte_du_catalogue_ne_se_modifie_pas_hors_migration() {
 
 #[tokio::test]
 async fn modifier_un_trait_apres_validation_revoque_l_activation() {
-    let (jetable, base, compagnon) = compagnon_actif().await;
+    let (jetable, _base, compagnon) = compagnon_actif().await;
     let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("au départ                    : statut {statut}, prompt validé {valide}");
     assert_eq!((statut.as_str(), valide), ("actif", true));
@@ -112,14 +112,17 @@ async fn modifier_un_trait_apres_validation_revoque_l_activation() {
     // Le verrou d'activation ne gardait que l'INSTANT de la transition : après validation, les
     // traits restaient librement modifiables, et le compagnon restait actif en portant un prompt
     // qui ne le décrivait plus.
-    sqlx::query(
-        "update personnage_parametres_gradues set valeur = 0.90
-          where personnage_id = $1 and parametre_code = 'humour'",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await
-    .expect("modification de trait");
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_gradues set valeur = 0.90
+                  where personnage_id = $1 and parametre_code = 'humour'",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("modification de trait");
 
     let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("après modification d'un trait : statut {statut}, prompt validé {valide}");
@@ -138,9 +141,15 @@ async fn renommer_apres_validation_revoque_aussi() {
 
     // C'était le second chemin par lequel du texte non modéré atteignait le prompt : le nom est
     // le seul texte libre, et le changer après validation le faisait entrer sans examen.
-    sqlx::query("update personnages set nom = 'Ma petite fille' where id = $1")
-        .bind(compagnon)
-        .execute(base.pool())
+    // Le renommage écrit `personnages`, pas une table `personnage_*` — mais sa révocation, elle,
+    // écrit `personnage_parametres_modele`. La contrainte de la migration 0011 s'applique donc
+    // par conséquence, et c'est cohérent : un renommage est une modification du compagnon.
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query("update personnages set nom = 'Ma petite fille' where id = $1")
+                .bind(compagnon),
+        )
         .await
         .expect("renommage");
 
@@ -164,17 +173,21 @@ async fn renommer_apres_validation_revoque_aussi() {
 
 #[tokio::test]
 async fn retirer_la_validation_rabat_un_compagnon_actif() {
-    let (jetable, base, compagnon) = compagnon_actif().await;
+    let (jetable, _base, compagnon) = compagnon_actif().await;
 
     // L'invariant « actif ⇒ prompt validé » était gardé sur une table et pas sur l'autre : rien
     // n'interdisait de retirer la validation en laissant le compagnon actif.
-    sqlx::query(
-        "update personnage_parametres_modele set valide_le = null where personnage_id = $1",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await
-    .expect("retrait de validation");
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_modele set valide_le = null
+                  where personnage_id = $1",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("retrait de validation");
 
     let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("validation retirée : statut {statut}, prompt validé {valide}");
@@ -200,14 +213,17 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     // Les valeurs franchissent une borne de palier — 0,90 « énormément » plafonné à 0,10 « très
     // peu ». À l'intérieur d'un même palier, le prompt ne bougerait pas, et l'intégrité
     // resterait intacte : c'est la stabilité voulue, pas un défaut de détection.
-    sqlx::query(
-        "update personnage_parametres_gradues set valeur = 0.90
-          where personnage_id = $1 and parametre_code = 'humour'",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await
-    .expect("curseur");
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_gradues set valeur = 0.90
+                  where personnage_id = $1 and parametre_code = 'humour'",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("curseur");
     personnage::valider(base.pool(), compagnon, None, "modele-x", &compagnon::fixtures::sceau_de_test())
         .await
         .expect("revalidation");
@@ -242,22 +258,29 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     );
 
     // Et l'altération de la ligne elle-même, que l'empreinte attrape.
-    sqlx::query(
-        "update personnage_parametres_modele set prompt_systeme_genere = 'texte remplacé'
-          where personnage_id = $1",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await
-    .expect("altération");
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_modele set prompt_systeme_genere = 'texte remplacé'
+                  where personnage_id = $1",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("altération");
     // La révocation vient de se déclencher : on revalide pour pouvoir observer l'empreinte.
-    sqlx::query(
-        "update personnage_parametres_modele set valide_le = now() where personnage_id = $1",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await
-    .expect("revalidation directe");
+    jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_modele set valide_le = now()
+                  where personnage_id = $1",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("revalidation directe");
 
     let altere = personnage::verifier_integrite(base.pool(), compagnon, None, &compagnon::fixtures::sceau_de_test())
         .await
@@ -270,18 +293,21 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
 
 #[tokio::test]
 async fn un_curseur_de_l_utilisateur_ne_se_pose_pas_sur_un_compagnon() {
-    let (jetable, base, compagnon) = compagnon_actif().await;
+    let (jetable, _base, compagnon) = compagnon_actif().await;
 
     // `intensite_suggestive` est porté par l'utilisateur : c'est un choix de l'humain sur ce
     // qu'il veut recevoir, pas un trait du compagnon. En écrire une copie créait deux sources de
     // vérité pour le seul paramètre à conséquence légale.
-    let refus = sqlx::query(
-        "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-         values ($1, 'intensite_suggestive', 0.80)",
-    )
-    .bind(compagnon)
-    .execute(base.pool())
-    .await;
+    let refus = jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
+                 values ($1, 'intensite_suggestive', 0.80)",
+            )
+            .bind(compagnon),
+        )
+        .await;
     println!(
         "intensite_suggestive sur un compagnon -> {}",
         if refus.is_err() {
@@ -400,17 +426,21 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
 
     // Le geste exact : le texte ET son empreinte, sans toucher à `valide_le`. C'est le
     // contournement le plus direct, celui qui ne demande aucune connaissance du code.
-    let touchees = sqlx::query(
-        "update personnage_parametres_modele
-            set prompt_systeme_genere = 'Tu es Alix, lyceenne de 15 ans.',
-                prompt_systeme_sceau = encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
-          where personnage_id = $1",
-    )
-    .bind(compagnon)
-    .execute(pool)
-    .await
-    .expect("la réécriture elle-même n'est pas interdite")
-    .rows_affected();
+    let touchees = jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_modele
+                    set prompt_systeme_genere = 'Tu es Alix, lyceenne de 15 ans.',
+                        prompt_systeme_sceau =
+                            encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
+                  where personnage_id = $1",
+            )
+            .bind(compagnon),
+        )
+        .await
+        .expect("la réécriture elle-même n'est pas interdite")
+        .rows_affected();
 
     let apres: (String, bool, bool) = sqlx::query_as(
         "select p.statut, m.valide_le is not null,
@@ -467,6 +497,69 @@ async fn revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider() {
     .expect("état");
     println!("après revalidation : statut {statut}, validé {valide}");
     assert!(valide, "une validation légitime ne doit pas s'auto-révoquer");
+
+    jetable.detruire().await;
+}
+
+#[tokio::test]
+async fn modifier_un_compagnon_sans_inscrire_de_version_est_refuse() {
+    // La dernière exigence de la phase 1.4 : « toute écriture sur les tables `personnage_*`
+    // s'accompagne d'une ligne dans `personnage_historique_versions`, dans la même
+    // transaction ». C'était une phrase dans un document, tenue par deux appelants qui y
+    // pensaient — et la phase 1.5 va multiplier les écrivains, chaque étape de l'onboarding
+    // écrivant des traits.
+    let (jetable, base, compagnon) = compagnon_actif().await;
+
+    // Sans version : refusé, et le refus arrive au `commit` puisque la contrainte est différée.
+    let negligent = sqlx::query(
+        "update personnage_parametres_gradues set valeur = 0.20
+          where personnage_id = $1 and parametre_code = 'humour'",
+    )
+    .bind(compagnon)
+    .execute(base.pool())
+    .await;
+    println!(
+        "écriture sans version   -> {}",
+        match &negligent {
+            Ok(_) => "ACCEPTÉE (ce qui est le défaut)".to_owned(),
+            Err(erreur) => format!("refusée — {erreur}"),
+        }
+    );
+    assert!(negligent.is_err(), "une modification non versionnée doit être refusée");
+
+    // Avec version, dans la même transaction : accepté. L'ordre à l'intérieur de la transaction
+    // n'a aucune importance — c'est ce qu'un trigger différé permet, et ce qu'un trigger
+    // ordinaire aurait interdit en se déclenchant avant que la version puisse être inscrite.
+    let versionne = jetable
+        .ecrire_avec_version(
+            compagnon,
+            sqlx::query(
+                "update personnage_parametres_gradues set valeur = 0.20
+                  where personnage_id = $1 and parametre_code = 'humour'",
+            )
+            .bind(compagnon),
+        )
+        .await;
+    println!(
+        "écriture avec version   -> {}",
+        if versionne.is_ok() { "acceptée" } else { "REFUSÉE" }
+    );
+    assert!(versionne.is_ok(), "une modification versionnée doit passer");
+
+    // Et l'historique raconte bien la modification.
+    let dernieres: Vec<(i32, String)> = sqlx::query_as(
+        "select version, raison from personnage_historique_versions
+          where personnage_id = $1 order by version",
+    )
+    .bind(compagnon)
+    .fetch_all(base.pool())
+    .await
+    .expect("historique");
+    println!("historique : {dernieres:?}");
+    assert!(
+        dernieres.iter().any(|(_, raison)| raison == "mise_a_jour_utilisateur"),
+        "la modification doit figurer à l'historique"
+    );
 
     jetable.detruire().await;
 }

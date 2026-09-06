@@ -228,6 +228,31 @@ construit, éprouvé, et attend son premier usage.
 - **La vérification d'âge robuste** : la déclaration simple ne suffit pas dans les juridictions
   qui exigent davantage — et les valeurs par défaut du schéma visent la France.
 
+## Toute modification laisse une version
+
+Depuis la migration 0011, une écriture sur une table `personnage_*` sans ligne dans
+`personnage_historique_versions`, **dans la même transaction**, est refusée. C'était la dernière
+exigence de la phase 1.4, et elle n'était tenue que par deux appelants qui y pensaient.
+
+Le mécanisme est un `constraint trigger ... deferrable initially deferred` : il se déclenche au
+`commit`, donc l'ordre des écritures à l'intérieur de la transaction n'a aucune importance. Un
+trigger ordinaire aurait échoué à la première ligne d'une transaction pourtant légitime.
+
+Deux conséquences à connaître :
+
+- **Le renommage est visé lui aussi**, par ricochet. `personnages` n'est pas une table
+  `personnage_*`, mais tout renommage déclenche une révocation qui écrit
+  `personnage_parametres_modele`. C'est le bon résultat : le nom est le seul texte libre du
+  compagnon, et la migration 0006 le décrit comme « le second chemin par lequel du texte non
+  modéré atteignait le prompt ».
+- **Le `delete` n'est pas couvert.** La seule suppression légitime est la purge RGPD, qui efface
+  aussi l'historique : lui demander d'y inscrire une version serait lui demander d'écrire dans ce
+  qu'elle détruit.
+
+Effet de bord utile sur le modèle de menace : une console qui altère un compagnon doit désormais
+inscrire une version. Ce n'est qu'une instruction de plus pour qui a la base — mais l'altération
+négligente, elle, est devenue impossible.
+
 ## Interactions
 
 - [[un-assistant-par-personne]] — pourquoi un seul compagnon par utilisateur.

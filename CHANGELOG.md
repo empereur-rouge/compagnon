@@ -5,6 +5,33 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.15.0] - 2026-09-06
+
+Phase 1.4 close. Ses deux premières exigences — composition et modération — étaient tenues depuis
+la 1.2 ; la troisième ne l'était que par discipline.
+
+### Added
+
+- **feat(db)** : migration `0011_toute_modification_est_versionnee.sql`. Une écriture sur une
+  table `personnage_*` sans ligne d'historique **dans la même transaction** est refusée. C'était
+  une phrase dans un document, tenue par deux appelants qui y pensaient — et la phase 1.5 va
+  multiplier les écrivains, chaque étape de l'onboarding écrivant des traits.
+  Le mécanisme est un `constraint trigger ... deferrable initially deferred` : il se déclenche au
+  `commit`, donc l'ordre des écritures dans la transaction n'importe pas. Un trigger ordinaire
+  aurait fait échouer une transaction légitime à sa première ligne.
+- **test** : `modifier_un_compagnon_sans_inscrire_de_version_est_refuse`.
+- **test(harnais)** : `BaseDeTest::ecrire_avec_version`, qui modélise la console **déterminée** —
+  celle qui inscrit la version en plus. La console négligente, elle, ne peut plus rien altérer.
+
+### Changed
+
+- **change(test)** : treize tests écrivaient directement dans les tables de traits sans version.
+  Trois d'entre eux attendaient un refus pour une **autre** raison (un `check` de forme) : ils
+  auraient continué de passer, sur le mauvais signal. Tous convertis.
+- **change(test)** : `la_moderation_ouvre_ou_ferme_le_verrou_d_activation` compte désormais les
+  versions de **modération** et non le total — sans quoi il échouerait au premier écrivain
+  ajouté, pour une raison sans rapport avec ce qu'il éprouve.
+
 ## [0.14.0] - 2026-09-06
 
 ### Fixed
@@ -819,6 +846,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.15.0 | 2026-09-06 | 1.4 — toute modification laisse une version |
 | 0.14.0 | 2026-09-06 | une réponse produite n'est plus régénérée |
 | 0.13.0 | 2026-09-06 | sceau du prompt à clé — HMAC hors base |
 | 0.12.0 | 2026-09-06 | identité multi-canal — UUID interne, pont vers les canaux |
