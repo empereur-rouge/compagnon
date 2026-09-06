@@ -17,6 +17,7 @@
 #![allow(clippy::expect_used)]
 
 use crate::config::Config;
+use crate::secret::Secret;
 
 /// Jeton d'exemple, de forme valide et sans aucune valeur réelle.
 ///
@@ -58,14 +59,14 @@ pub fn config_de_test(api: &str) -> Config {
 #[must_use]
 pub fn config_de_test_sur(api: &str, base: &str) -> Config {
     Config {
-        jeton_bot: JETON.to_owned(),
-        secret_webhook: SECRET.to_owned(),
+        jeton_bot: Secret::nouveau(JETON.to_owned()),
+        secret_webhook: Secret::nouveau(SECRET.to_owned()),
         // Port zéro : le système attribue un port libre, ce qui permet à plusieurs tests de
         // tourner en parallèle sans se disputer une adresse fixe.
         adresse_ecoute: "127.0.0.1:0"
             .parse()
             .expect("adresse littérale toujours valide"),
-        url_base: base.to_owned(),
+        url_base: Secret::nouveau(base.to_owned()),
         api_telegram: api.to_owned(),
     }
 }

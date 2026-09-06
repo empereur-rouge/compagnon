@@ -33,6 +33,15 @@ Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
 
 ### Changed
 
+- **change(secret)** : les trois secrets existants passent par `Secret` — `Config::jeton_bot`,
+  `Config::secret_webhook`, `Config::url_base`, ainsi que `Canal::racine` et `Canal::secret`.
+  Leur protection reposait jusqu'ici sur un `Debug` écrit à la main et sur l'**absence** de
+  dérivations : deux garanties qui ne couvrent que ce qu'elles nomment, alors que le champ
+  restait une `String` que n'importe quel `format!` un cran plus bas pouvait rendre.
+- **change(telegram)** : `Canal` dérive `Debug`, après l'avoir longtemps refusé. Ses deux champs
+  secrets étant des `Secret`, la dérivation **est** le rendu masqué — et un rendu masqué vaut
+  mieux qu'une interdiction, qui laissait `format!("{:?}", canal.racine)` passer sans un mot du
+  compilateur. `tests/secrets.rs` imprime désormais ce rendu.
 - **change(modele)** : `ErreurModele` classe la panne au lieu de la transporter — `Panne` est un
   enum nu, `Refuse` ne porte qu'un `u16`, et le corps d'une réponse de fournisseur n'entre nulle
   part. Même correctif que `telegram::envoi::Panne`, appliqué **avant** la fuite plutôt qu'après :

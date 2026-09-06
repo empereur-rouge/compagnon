@@ -184,3 +184,27 @@ fn le_debug_de_la_config_ne_montre_pas_le_mot_de_passe_de_la_base() {
         "l'utilisateur et la base doivent rester visibles"
     );
 }
+
+#[test]
+fn le_debug_du_canal_masque_le_jeton_qu_il_porte() {
+    // `Canal` a longtemps **refusé** de dériver `Debug`, précisément parce que sa racine porte
+    // le jeton. Une interdiction ne protège que ce qu'elle couvre : elle n'empêchait pas
+    // d'écrire `format!("{:?}", canal.racine)` un cran plus bas, ce qu'aucun compilateur
+    // n'aurait signalé.
+    //
+    // Les deux champs secrets étant devenus des `Secret`, la dérivation est désormais le rendu
+    // masqué. Ce test constate ce qu'elle produit — c'est le rendu qu'un `tracing::debug!` sur
+    // l'état partagé écrirait dans les journaux.
+    let config = compagnon::fixtures::config_de_test("https://api.telegram.org");
+    let canal = Canal::new(&config).expect("le client doit se construire");
+
+    let rendu = format!("{canal:?}");
+    println!("Debug de Canal :\n  {rendu}");
+
+    assert!(!rendu.contains(PARTIE_SECRETE), "le jeton fuit dans le Debug du canal");
+    assert!(!rendu.contains(SECRET), "le secret du webhook fuit dans le Debug du canal");
+    // La racine entière est masquée, pas seulement sa partie secrète : c'est l'URL complète
+    // qui a fui la première fois, et « api.telegram.org/bot123456789 » identifie déjà le bot.
+    assert!(!rendu.contains("api.telegram.org"), "l'URL de l'API fuit dans le Debug du canal");
+    assert!(rendu.contains("masqué"), "le rendu doit dire qu'il masque quelque chose");
+}

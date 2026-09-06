@@ -22,6 +22,8 @@ use std::net::SocketAddr;
 
 use sqlx::postgres::PgConnectOptions;
 
+use crate::secret::Secret;
+
 /// Racine de l'API Telegram, quand `API_TELEGRAM` n'est pas positionnée.
 const API_TELEGRAM_DEFAUT: &str = "https://api.telegram.org";
 
@@ -74,17 +76,18 @@ pub enum ErreurConfig {
 /// est lue une fois au démarrage, et rien n'a besoin d'en faire une copie. Une dérivation
 /// gratuite laisserait un jour quelqu'un en semer des exemplaires sur le tas.
 pub struct Config {
-    /// Jeton donné par `@BotFather`. Secret.
-    pub jeton_bot: String,
-    /// Secret partagé renvoyé par Telegram dans chaque appel de webhook. Secret.
-    pub secret_webhook: String,
+    /// Jeton donné par `@BotFather`.
+    pub jeton_bot: Secret,
+    /// Secret partagé renvoyé par Telegram dans chaque appel de webhook.
+    pub secret_webhook: Secret,
     /// Adresse sur laquelle le service écoute.
     pub adresse_ecoute: SocketAddr,
-    /// URL de connexion à PostgreSQL. **Secret** : elle porte un mot de passe.
+    /// URL de connexion à PostgreSQL : elle porte un mot de passe.
     ///
-    /// Le [`fmt::Debug`] n'en montre que ce qui sert au diagnostic — schéma, utilisateur,
-    /// hôte, port, base — et masque le mot de passe.
-    pub url_base: String,
+    /// Le [`fmt::Debug`] de [`Config`] n'en montre que ce qui sert au diagnostic — utilisateur,
+    /// hôte, port, base — via [`masquer_url`]. Le [`Secret`] garantit que c'est le **seul**
+    /// rendu possible : celui de `Secret` ne montre qu'une longueur.
+    pub url_base: Secret,
     /// Racine de l'API Telegram, sans barre oblique finale.
     pub api_telegram: String,
 }
@@ -98,12 +101,12 @@ impl fmt::Debug for Config {
                 "jeton_bot",
                 &format_args!("{}:<masqué>", self.identifiant_bot()),
             )
-            .field(
-                "secret_webhook",
-                &format_args!("<masqué, {} caractères>", self.secret_webhook.len()),
-            )
+            .field("secret_webhook", &self.secret_webhook)
             .field("adresse_ecoute", &self.adresse_ecoute)
-            .field("url_base", &format_args!("{}", masquer_url(&self.url_base)))
+            .field(
+                "url_base",
+                &format_args!("{}", masquer_url(self.url_base.exposer())),
+            )
             .field("api_telegram", &self.api_telegram)
             .finish()
     }
@@ -152,10 +155,10 @@ impl Config {
         }
 
         Ok(Self {
-            jeton_bot,
-            secret_webhook,
+            jeton_bot: Secret::nouveau(jeton_bot),
+            secret_webhook: Secret::nouveau(secret_webhook),
             adresse_ecoute,
-            url_base,
+            url_base: Secret::nouveau(url_base),
             api_telegram,
         })
     }
@@ -166,9 +169,8 @@ impl Config {
     /// distinguer les instances dans les journaux.
     #[must_use]
     pub fn identifiant_bot(&self) -> &str {
-        self.jeton_bot
-            .split_once(':')
-            .map_or(self.jeton_bot.as_str(), |(id, _)| id)
+        let jeton = self.jeton_bot.exposer();
+        jeton.split_once(':').map_or(jeton, |(id, _)| id)
     }
 }
 

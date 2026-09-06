@@ -102,7 +102,7 @@ pub async fn declarer_webhook(config: &Config, url: &str) -> Result<(), ErreurCl
     println!("webhook déclaré : {url}");
     println!(
         "secret partagé  : {} caractères",
-        config.secret_webhook.len()
+        config.secret_webhook.longueur()
     );
     Ok(())
 }

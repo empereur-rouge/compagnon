@@ -116,8 +116,8 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
     // que par une commande séparée retire une étape d'exploitation qu'on peut oublier — et un
     // service tournant sur un schéma incomplet est une panne qui ne se déclare qu'au premier
     // message, donc devant un utilisateur.
-    let base = Base::ouvrir(&config.url_base).await?;
-    tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
+    tracing::info!(base = %crate::config::masquer_url(config.url_base.exposer()), "base jointe et migrée");
 
     // L'écoute est prise AVANT le lancement du worker : tout ce qui peut échouer d'abord,
     // tout ce qui démarre ensuite. Dans l'ordre inverse, un `bind` refusé laissait une tâche
@@ -235,8 +235,8 @@ pub async fn scruter(
     canal.retirer_webhook().await?;
     tracing::info!("webhook retiré : la scrutation et le webhook s'excluent");
 
-    let base = Base::ouvrir(&config.url_base).await?;
-    tracing::info!(base = %crate::config::masquer_url(&config.url_base), "base jointe et migrée");
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
+    tracing::info!(base = %crate::config::masquer_url(config.url_base.exposer()), "base jointe et migrée");
 
     let canal = Arc::new(canal);
     let equipe = Equipe::lancer(&base, &canal);
