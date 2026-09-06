@@ -37,6 +37,7 @@ use crate::db::dialogue::{Auteur, Interlocuteur};
 use crate::db::{Base, consommation, dialogue, file};
 use crate::error::ErrorCode;
 use crate::modele::{ClientModele, ContexteConversation, ErreurModele, Role, Tour};
+use crate::personnage::sceau::Sceau;
 use crate::telegram::Canal;
 use crate::telegram::envoi::Action;
 use crate::telegram::types::Recu;
@@ -126,7 +127,12 @@ impl Equipe {
     /// les tests injectent un double qui fabrique les pannes du fournisseur, et le worker est
     /// alors éprouvé sur des échecs qui, en production, n'arrivent qu'au pire moment.
     #[must_use]
-    pub fn lancer(base: &Base, canal: &Arc<Canal>, modele: &Arc<dyn ClientModele>) -> Self {
+    pub fn lancer(
+        base: &Base,
+        canal: &Arc<Canal>,
+        modele: &Arc<dyn ClientModele>,
+        sceau: &Arc<Sceau>,
+    ) -> Self {
         let (arret, ecoute) = watch::channel(false);
         let vivants = Arc::new(AtomicUsize::new(WORKERS));
         let taches = (0..WORKERS)
@@ -135,6 +141,7 @@ impl Equipe {
                     base.clone(),
                     Arc::clone(canal),
                     Arc::clone(modele),
+                    Arc::clone(sceau),
                     ecoute.clone(),
                     numero,
                     Arc::clone(&vivants),
@@ -196,6 +203,7 @@ async fn tourner(
     base: Base,
     canal: Arc<Canal>,
     modele: Arc<dyn ClientModele>,
+    sceau: Arc<Sceau>,
     mut arret: watch::Receiver<bool>,
     numero: usize,
     vivants: Arc<AtomicUsize>,
@@ -212,7 +220,7 @@ async fn tourner(
         // se reposer, et l'attente est faite une fois, au même endroit, toujours interruptible.
         let repos = match file::prendre(base.pool(), BAIL).await {
             Ok(Some(tache)) => {
-                let issue = traiter(&base, &canal, modele.as_ref(), &tache).await;
+                let issue = traiter(&base, &canal, modele.as_ref(), &sceau, &tache).await;
                 traites += 1;
                 match issue {
                     // Rien à attendre : la file vient de prouver qu'elle a du travail.
@@ -253,6 +261,7 @@ async fn traiter(
     base: &Base,
     canal: &Canal,
     modele: &dyn ClientModele,
+    sceau: &Sceau,
     tache: &file::Tache,
 ) -> Issue {
     let Ok(recu) = serde_json::from_value::<Recu>(tache.charge_utile.clone()) else {
@@ -269,7 +278,7 @@ async fn traiter(
     // d'un compagnon actif et l'intégrité de son prompt sont désormais trois issues d'une même
     // lecture. Aucune ne peut être oubliée par un chemin futur — la phase 2 va allonger cette
     // fonction.
-    let compagnon = match dialogue::ouvrir(base.pool(), tache.utilisateur_id).await {
+    let compagnon = match dialogue::ouvrir(base.pool(), tache.utilisateur_id, sceau).await {
         Ok(Interlocuteur::Pret(compagnon)) => compagnon,
         Ok(Interlocuteur::AgeNonVerifie) => {
             tracing::info!(chat_id = recu.chat_id, "âge non vérifié, accès au moteur refusé");
@@ -299,7 +308,7 @@ async fn traiter(
 
     // Le message entrant est inscrit AVANT l'appel : s'il échoue, ce que la personne a écrit
     // reste. Le perdre serait le pire des échecs — bien pire que l'absence de réponse.
-    if let Err(erreur) = dialogue::inscrire_message(
+    let entrant = match dialogue::inscrire_message(
         base.pool(),
         compagnon.conversation_id,
         Auteur::Utilisateur,
@@ -308,9 +317,33 @@ async fn traiter(
     )
     .await
     {
-        tracing::error!(tache = %tache.id, %erreur, "message entrant non inscrit");
-        rendre_en_echec(base, tache, ErrorCode::Interne).await;
-        return Issue::Echouee;
+        Ok(id) => id,
+        Err(erreur) => {
+            tracing::error!(tache = %tache.id, %erreur, "message entrant non inscrit");
+            rendre_en_echec(base, tache, ErrorCode::Interne).await;
+            return Issue::Echouee;
+        }
+    };
+
+    // Une reprise ne régénère pas. Si une réponse a déjà été produite pour ce message et n'est
+    // jamais partie — Telegram a refusé, le réseau a coupé — c'est elle qu'on renvoie. Sans
+    // cela, une panne d'envoi faisait repayer trois générations complètes pour un incident qui
+    // n'a rien à voir avec le modèle.
+    match dialogue::reponse_a_renvoyer(base.pool(), compagnon.conversation_id, entrant).await {
+        Ok(Some(en_attente)) => {
+            tracing::info!(
+                chat_id = recu.chat_id,
+                tentative = tache.tentatives,
+                "réponse déjà produite, renvoyée sans rappeler le modèle"
+            );
+            return renvoyer(base, canal, tache, &recu, &en_attente).await;
+        }
+        Ok(None) => {}
+        Err(erreur) => {
+            // Ne pas savoir s'il y a une réponse en attente n'empêche pas d'en produire une ;
+            // au pire on paie une génération de plus, ce qui est l'ancien comportement.
+            tracing::warn!(tache = %tache.id, %erreur, "réponse en attente illisible");
+        }
     }
 
     // L'indication d'activité est un confort : son échec ne doit pas empêcher la réponse. Elle
@@ -362,12 +395,74 @@ async fn traiter(
         "réponse produite"
     );
 
-    let envoi = canal.envoyer_texte(recu.chat_id, &reponse.texte).await;
+    // La réponse est inscrite AVANT l'envoi, sans identifiant Telegram. C'est ce qui la rend
+    // renvoyable si l'envoi échoue, au lieu d'être régénérée.
+    //
+    // La colonne porte alors la distinction : `identifiant_telegram` non nul signifie « la
+    // personne l'a reçu ». La mémoire de la phase 2 devra ne lire que ces lignes-là — une
+    // réponse générée et jamais délivrée n'a pas eu lieu dans la conversation.
+    let message_id = match dialogue::inscrire_message(
+        base.pool(),
+        compagnon.conversation_id,
+        Auteur::Compagnon,
+        &reponse.texte,
+        None,
+    )
+    .await
+    {
+        Ok(id) => Some(id),
+        Err(erreur) => {
+            // On perd la trace, pas le message : la réponse part quand même. Elle ne sera
+            // simplement pas renvoyable si l'envoi échoue.
+            tracing::error!(tache = %tache.id, %erreur, "réponse produite mais non inscrite");
+            None
+        }
+    };
 
-    // Le message sortant n'est inscrit que si l'envoi a abouti : une ligne dans `messages`
-    // signifie « la personne l'a reçu », et la phase 2 relira cette table pour composer
-    // l'historique. Un message jamais parvenu n'a pas eu lieu dans la conversation.
-    let message_id = match &envoi {
+    // Le modèle a été payé, que Telegram accepte ou non — et il ne sera pas rappelé sur reprise.
+    inscrire_au_registre(base, modele, tache, &recu, &compagnon, message_id, Some(&reponse)).await;
+
+    livrer(base, canal, tache, &recu, message_id, &reponse.texte).await
+}
+
+/// Renvoie une réponse déjà produite, sans repasser par le modèle.
+async fn renvoyer(
+    base: &Base,
+    canal: &Canal,
+    tache: &file::Tache,
+    recu: &Recu,
+    en_attente: &dialogue::ReponseEnAttente,
+) -> Issue {
+    // L'indication d'activité est renvoyée aussi : de l'extérieur, une reprise doit ressembler à
+    // un service qui répond, pas à un service qui hésite.
+    if let Err(erreur) = canal.action(recu.chat_id, Action::Typing).await {
+        tracing::debug!(chat_id = recu.chat_id, %erreur, "indication d'activité non affichée");
+    }
+    livrer(
+        base,
+        canal,
+        tache,
+        recu,
+        Some(en_attente.message_id),
+        &en_attente.texte,
+    )
+    .await
+}
+
+/// Envoie un texte déjà produit, confirme sa réception, et rend la tâche.
+///
+/// Partagée par la production et le renvoi : les deux ont exactement le même épilogue, et
+/// l'écrire deux fois l'aurait fait diverger — c'est ce que les commentaires de `clore` et
+/// `rendre_en_echec` racontent déjà pour d'autres gestes.
+async fn livrer(
+    base: &Base,
+    canal: &Canal,
+    tache: &file::Tache,
+    recu: &Recu,
+    message_id: Option<uuid::Uuid>,
+    texte: &str,
+) -> Issue {
+    match canal.envoyer_texte(recu.chat_id, texte).await {
         Ok(identifiants) => {
             tracing::info!(
                 chat_id = recu.chat_id,
@@ -375,31 +470,14 @@ async fn traiter(
                 morceaux = identifiants.len(),
                 "réponse envoyée"
             );
-            dialogue::inscrire_message(
-                base.pool(),
-                compagnon.conversation_id,
-                Auteur::Compagnon,
-                &reponse.texte,
-                identifiants.first().copied(),
-            )
-            .await
-            .inspect_err(|erreur| {
-                // La personne a sa réponse : la tâche ne doit pas être reprise, ce qui la lui
-                // enverrait deux fois. On perd la trace, pas le message.
-                tracing::error!(tache = %tache.id, %erreur, "réponse envoyée mais non inscrite");
-            })
-            .ok()
-        }
-        Err(_) => None,
-    };
-
-    // Le modèle a été payé, que Telegram accepte ou non. Écrite hors du `match`, la ligne
-    // vaut pour les deux issues : un coût omis parce que l'envoi a raté est un coût qui
-    // manquera dans la marge, et la reprise en produira un second.
-    inscrire_au_registre(base, modele, tache, &recu, &compagnon, message_id, Some(&reponse)).await;
-
-    match envoi {
-        Ok(_) => {
+            if let Some(id) = message_id
+                && let Err(erreur) =
+                    dialogue::confirmer_envoi(base.pool(), id, identifiants.first().copied()).await
+            {
+                // La personne a sa réponse. Ne pas confirmer laisse la ligne renvoyable, mais la
+                // tâche est close juste après : personne ne viendra la relire.
+                tracing::error!(tache = %tache.id, %erreur, "réception non confirmée");
+            }
             clore(base, tache, "tâche traitée mais non close").await;
             Issue::Close
         }

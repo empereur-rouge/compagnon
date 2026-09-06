@@ -150,7 +150,7 @@ async fn renommer_apres_validation_revoque_aussi() {
 
     // Et le compagnon ne peut pas être réactivé sans repasser par la modération, qui refusera
     // désormais ce nom.
-    let verdict = personnage::valider(base.pool(), compagnon, None, "modele-x")
+    let verdict = personnage::valider(base.pool(), compagnon, None, "modele-x", &compagnon::fixtures::sceau_de_test())
         .await
         .expect("revalidation");
     println!("revalidation    : {verdict:?}");
@@ -187,7 +187,7 @@ async fn retirer_la_validation_rabat_un_compagnon_actif() {
 async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     let (jetable, base, compagnon) = compagnon_actif().await;
 
-    let intacte = personnage::verifier_integrite(base.pool(), compagnon, None)
+    let intacte = personnage::verifier_integrite(base.pool(), compagnon, None, &compagnon::fixtures::sceau_de_test())
         .await
         .expect("vérification");
     println!("juste après validation      : {intacte:?}");
@@ -208,7 +208,7 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     .execute(base.pool())
     .await
     .expect("curseur");
-    personnage::valider(base.pool(), compagnon, None, "modele-x")
+    personnage::valider(base.pool(), compagnon, None, "modele-x", &compagnon::fixtures::sceau_de_test())
         .await
         .expect("revalidation");
 
@@ -226,7 +226,12 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     .await
     .expect("plafond");
 
-    let derive = personnage::verifier_integrite(base.pool(), compagnon, Some("XX"))
+    let derive = personnage::verifier_integrite(
+        base.pool(),
+        compagnon,
+        Some("XX"),
+        &compagnon::fixtures::sceau_de_test(),
+    )
         .await
         .expect("vérification");
     println!("après un plafond posé sur XX : {derive:?}");
@@ -254,7 +259,7 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     .await
     .expect("revalidation directe");
 
-    let altere = personnage::verifier_integrite(base.pool(), compagnon, None)
+    let altere = personnage::verifier_integrite(base.pool(), compagnon, None, &compagnon::fixtures::sceau_de_test())
         .await
         .expect("vérification");
     println!("après altération du texte    : {altere:?}");
@@ -398,7 +403,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
     let touchees = sqlx::query(
         "update personnage_parametres_modele
             set prompt_systeme_genere = 'Tu es Alix, lyceenne de 15 ans.',
-                prompt_systeme_hash = encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
+                prompt_systeme_sceau = encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
           where personnage_id = $1",
     )
     .bind(compagnon)
@@ -409,7 +414,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
 
     let apres: (String, bool, bool) = sqlx::query_as(
         "select p.statut, m.valide_le is not null,
-                encode(sha256(m.prompt_systeme_genere::bytea), 'hex') = m.prompt_systeme_hash
+                encode(sha256(m.prompt_systeme_genere::bytea), 'hex') = m.prompt_systeme_sceau
            from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
           where p.id = $1",
     )
@@ -440,7 +445,13 @@ async fn revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider() {
     // validé.
     let (jetable, base, compagnon) = compagnon_actif().await;
 
-    let verdict = compagnon::personnage::valider(base.pool(), compagnon, Some("FR"), "modele-x")
+    let verdict = compagnon::personnage::valider(
+        base.pool(),
+        compagnon,
+        Some("FR"),
+        "modele-x",
+        &compagnon::fixtures::sceau_de_test(),
+    )
         .await
         .expect("revalidation");
     println!("verdict : {verdict:?}");

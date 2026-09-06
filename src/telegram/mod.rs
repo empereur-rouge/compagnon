@@ -27,7 +27,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::error::{ApiError, ErrorCode};
-use crate::secret::Secret;
+use crate::secret::{Secret, egal_temps_constant};
 use envoi::{Action, ErreurEnvoi, Identite, MessageEnvoye, Panne, Reponse};
 use types::Update;
 
@@ -345,27 +345,6 @@ struct CorpsWebhook<'a> {
     drop_pending_updates: bool,
 }
 
-/// Compare deux suites d'octets sans révéler par sa durée où elles divergent.
-///
-/// # Ce que cela protège, et ce que cela ne protège pas
-///
-/// Une comparaison ordinaire s'arrête au premier octet différent. Un attaquant qui mesure des
-/// milliers de réponses peut alors reconstituer le secret octet par octet. La boucle ici
-/// parcourt toujours toute la longueur.
-///
-/// Ce que la fonction ne masque pas, c'est la **longueur** du secret présenté : les tailles
-/// sont comparées d'abord. C'est assumé — la longueur de notre secret est une constante de
-/// déploiement, pas une information que sa découverte rendrait exploitable.
-fn egal_temps_constant(presente: &[u8], attendu: &[u8]) -> bool {
-    if presente.len() != attendu.len() {
-        return false;
-    }
-    let mut ecart = 0_u8;
-    for (a, b) in presente.iter().zip(attendu) {
-        ecart |= a ^ b;
-    }
-    ecart == 0
-}
 
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]

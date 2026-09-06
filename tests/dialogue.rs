@@ -175,27 +175,65 @@ async fn un_prompt_altere_hors_processus_ferme_l_acces_au_modele() {
 }
 
 #[tokio::test]
-async fn un_envoi_refuse_par_telegram_laisse_quand_meme_le_cout_au_registre() {
+async fn un_envoi_refuse_par_telegram_ne_fait_pas_repayer_la_generation() {
+    // Le comportement d'avant, mesuré : la réponse était produite, l'envoi ratait, la tâche
+    // repartait du début et **rappelait le modèle**. Trois générations facturées pour une panne
+    // qui n'a rien à voir avec le modèle. Le test d'alors l'affirmait :
+    //
+    //     assert_eq!(lignes.len(), 3, "un appel payé par tentative");
+    //
+    // La réponse est désormais inscrite avant l'envoi, sans identifiant Telegram, ce qui la
+    // rend renvoyable. Une reprise la retrouve et la renvoie telle quelle.
     let faux = FauxTelegram::demarrer().await;
-    // Telegram refuse : la génération, elle, a bien eu lieu et a bien été payée. L'omettre du
-    // registre ferait manquer ce coût dans la marge, et la reprise en produirait un second.
     faux.casser_l_envoi().await;
     let service = service_pret(&faux, ModeleDouble::qui_repond("une réponse qui n'arrivera pas")).await;
 
     service.poster(&update_privee(910_005, "coucou")).await;
-    faux.attendre("sendMessage", 1).await;
 
-    // Laisser le worker aller au bout de ses reprises.
-    let lignes = service.base().attendre_registre(UTILISATEUR, 3).await;
-    println!("registre : {lignes:?}");
+    // Trois tentatives d'envoi : la file va au bout de ses reprises.
+    faux.attendre("sendMessage", 3).await;
+    let lignes = service.base().attendre_registre(UTILISATEUR, 1).await;
+    println!("appels au modèle : {}", service.modele().appels());
+    println!("registre         : {lignes:?}");
+
+    assert_eq!(
+        service.modele().appels(),
+        1,
+        "la génération est payée une fois, pas une par tentative d'envoi"
+    );
+    assert_eq!(lignes.len(), 1, "une génération, une ligne de coût");
+    assert_eq!(lignes[0].1, "ok", "le modèle a réussi ; c'est l'envoi qui a échoué");
+    assert_eq!(lignes[0].2, "double-de-test", "le modèle rendu, pas celui demandé");
+
+    // Et la réponse reste en attente en base, sans identifiant Telegram : elle a été produite,
+    // elle n'a pas été reçue. C'est cette distinction que la mémoire de la phase 2 devra lire.
+    let fil = service.base().messages_du_fil(UTILISATEUR).await;
+    println!("fil en base : {fil:?}");
+    assert_eq!(fil.len(), 2, "l'entrant et le sortant sont inscrits");
+
+    service.eteindre().await;
+}
+
+#[tokio::test]
+async fn une_reponse_bloquee_puis_debloquee_part_sans_nouvelle_generation() {
+    // La contrepartie : quand Telegram redevient joignable, la réponse déjà produite part telle
+    // quelle. C'est ce qui rend le renvoi utile plutôt que seulement moins coûteux.
+    let faux = FauxTelegram::demarrer().await;
+    // Un seul échec, puis Telegram redevient joignable.
+    faux.casser_l_envoi_n_fois(1).await;
+    let service = service_pret(&faux, ModeleDouble::qui_repond("Je pensais à toi.")).await;
+
+    service.poster(&update_privee(910_008, "tu es là ?")).await;
+    let messages = faux.attendre("sendMessage", 2).await;
+    let dernier = messages
+        .last()
+        .and_then(|m| m["text"].as_str())
+        .unwrap_or_default();
+    println!("texte finalement délivré : {dernier}");
     println!("appels au modèle : {}", service.modele().appels());
 
-    assert_eq!(lignes.len(), 3, "un appel payé par tentative");
-    assert!(
-        lignes.iter().all(|(_, statut, _)| statut == "ok"),
-        "le modèle a réussi à chaque fois ; c'est l'envoi qui a échoué"
-    );
-    assert_eq!(lignes[0].2, "double-de-test", "le modèle rendu, pas celui demandé");
+    assert_eq!(dernier, "Je pensais à toi.", "c'est bien la réponse d'origine");
+    assert_eq!(service.modele().appels(), 1, "et elle n'a été générée qu'une fois");
 
     service.eteindre().await;
 }
@@ -225,6 +263,50 @@ async fn reecrire_le_prompt_en_console_desactive_le_compagnon() {
 
     assert_eq!(service.modele().appels(), 0, "un compagnon non actif ne parle pas");
     assert!(texte.contains("assistant"));
+    assert!(
+        service.base().registre(UTILISATEUR).await.is_empty(),
+        "rien n'a été appelé, donc rien n'est facturé"
+    );
+
+    service.eteindre().await;
+}
+
+#[tokio::test]
+async fn un_prompt_forge_avec_un_sceau_recalcule_est_refuse() {
+    // LE test que le passage au HMAC existe pour rendre possible.
+    //
+    // La manœuvre est celle d'une console `psql` qui fait tout correctement : elle réécrit le
+    // prompt, **recalcule le sceau**, et réémet la validation. Le compagnon reste actif, sa
+    // validation est fraîche, et son sceau correspond au texte.
+    //
+    // Quand le sceau était un `sha256`, cela suffisait : tout ce qu'il fallait pour le forger
+    // était dans la ligne, et le texte injecté — précisément la classe de contenu que la
+    // modération existe pour empêcher — partait au modèle.
+    //
+    // La clé du HMAC vit dans l'environnement du processus. La base ne contient plus de quoi
+    // fabriquer un sceau valide, et le worker le voit.
+    let faux = FauxTelegram::demarrer().await;
+    let service = service_pret(&faux, ModeleDouble::qui_repond("je ne devrais pas parler")).await;
+
+    let forge = service.base().forger_le_prompt(UTILISATEUR).await;
+    let (statut, valide) = service.base().etat_du_compagnon(UTILISATEUR).await;
+    println!("prompt forgé → {forge} ligne(s) ; statut {statut}, validé {valide}");
+    // Le compagnon a traversé les deux barrières précédentes : il est actif ET validé.
+    assert_eq!(statut, "actif", "la manœuvre ne déclenche aucune révocation");
+    assert!(valide, "et la validation paraît fraîche");
+
+    service.poster(&update_privee(910_007, "raconte-moi")).await;
+    let messages = faux.attendre("sendMessage", 1).await;
+    let texte = messages[0]["text"].as_str().unwrap_or_default();
+    println!("message reçu :\n---\n{texte}\n---");
+    println!("appels au modèle : {}", service.modele().appels());
+
+    assert_eq!(
+        service.modele().appels(),
+        0,
+        "un prompt scellé sans la clé n'atteint pas le modèle"
+    );
+    assert!(texte.contains("Réessaie"));
     assert!(
         service.base().registre(UTILISATEUR).await.is_empty(),
         "rien n'a été appelé, donc rien n'est facturé"

@@ -5,6 +5,75 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.14.0] - 2026-09-06
+
+### Fixed
+
+- **fix(worker)** : un échec d'envoi Telegram faisait **repayer la génération**. La réponse était
+  produite, l'envoi ratait, la tâche repartait du début et rappelait le modèle — trois
+  générations facturées pour un `502`, et le test d'alors l'affirmait
+  (`assert_eq!(lignes.len(), 3, "un appel payé par tentative")`). La réponse est désormais
+  inscrite **avant** l'envoi, sans `identifiant_telegram`, ce qui la rend renvoyable : une reprise
+  la retrouve et la renvoie telle quelle. Mesuré : un appel au lieu de trois.
+
+### Changed
+
+- **change(db)** : `identifiant_telegram` non nul signifie désormais « la personne l'a reçu ».
+  Une réponse générée et jamais délivrée existe en base mais n'a pas eu lieu dans la
+  conversation — la mémoire de la phase 2 devra ne lire que les lignes confirmées, sans quoi un
+  compagnon se souviendrait d'avoir dit ce que personne n'a lu.
+- **change(worker)** : `livrer` réunit l'épilogue de la production et celui du renvoi. Les deux
+  ont exactement la même fin — envoyer, confirmer, rendre la tâche — et l'écrire deux fois
+  l'aurait fait diverger.
+
+### Added
+
+- **feat(db)** : `dialogue::reponse_a_renvoyer` et `dialogue::confirmer_envoi`. Une réponse en
+  attente se distingue d'une réponse orpheline par sa date, comparée à celle du message auquel
+  elle répond : l'inscription idempotente de l'entrant garde la date de la première tentative.
+- **test** : `un_envoi_refuse_par_telegram_ne_fait_pas_repayer_la_generation` et
+  `une_reponse_bloquee_puis_debloquee_part_sans_nouvelle_generation` — le second vérifie que
+  c'est bien le texte d'origine qui part quand Telegram redevient joignable.
+- **test(harnais)** : `casser_l_envoi_n_fois`, pour observer ce qui se passe **après** une panne
+  d'envoi. Démonter un montage prioritaire aurait demandé un `reset()` du serveur, qui efface
+  aussi l'historique des appels — c'est-à-dire ce que le test compte.
+
+## [0.13.0] - 2026-09-06
+
+Le sceau du prompt cesse d'être forgeable depuis la base.
+
+### Changed
+
+- **change(personnage)** : `prompt_systeme_hash` devient `prompt_systeme_sceau`, et son contenu
+  un **HMAC-SHA256 dont la clé vit dans l'environnement** (`PROMPT_CLE_SCEAU`). C'était un
+  `sha256` du texte, rangé dans la même ligne que le texte qu'il attestait — donc calculable par
+  quiconque pouvait écrire cette ligne. Le contournement tenait en une instruction.
+  Le renommage n'est pas cosmétique : un « hash » se recalcule avec ce qu'on a sous la main, un
+  « sceau » demande une clé, et la confusion entre les deux est ce qui a laissé un contrôle
+  passer pour une garantie.
+- **change(personnage)** : `composer` ne rend plus d'empreinte. Sceller demande une clé, qui
+  n'est pas dans les traits ; composer reste une fonction pure de ce que l'utilisateur a choisi,
+  et apposer le sceau est un second geste, porté par `personnage::sceau::Sceau`.
+- **change(secret)** : `egal_temps_constant` quitte `telegram` pour `secret`. Comparer un secret
+  sans fuir par le temps n'a rien de spécifique à un canal, et le sceau en a besoin pour la même
+  raison — un attaquant qui a la base peut écrire le texte de son choix et observer si le service
+  l'accepte.
+
+### Added
+
+- **feat(personnage)** : `sceau::Sceau`, et `PROMPT_CLE_SCEAU` lue à la demande — comme la
+  configuration du modèle, pour que `compagnon sonde` reste utilisable sans elle au moment où
+  l'on diagnostique un incident.
+- **feat(db)** : migration `0010_sceau_a_cle.sql`. Une migration n'a pas la clé — c'est
+  l'intérêt — donc elle ne peut pas resceller : elle **révoque** toutes les validations
+  existantes, et chaque compagnon repasse par la modération. Rien n'est perdu ; le verrou
+  d'activation se referme jusqu'à revalidation. Faite maintenant parce que la table ne contient
+  encore que des compagnons d'essai.
+- **test** : `un_prompt_forge_avec_un_sceau_recalcule_est_refuse` — la manœuvre complète d'une
+  console, sceau recalculé et validation réémise. Le compagnon reste `actif`, sa validation
+  paraît fraîche, son sceau correspond à son texte, **et le modèle n'est pas appelé**. C'est le
+  test que le passage au HMAC existe pour rendre possible.
+
 ## [0.12.0] - 2026-09-06
 
 L'identité de l'utilisateur cesse d'être celle de Telegram. Demandé par la révision de
@@ -750,6 +819,8 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.14.0 | 2026-09-06 | une réponse produite n'est plus régénérée |
+| 0.13.0 | 2026-09-06 | sceau du prompt à clé — HMAC hors base |
 | 0.12.0 | 2026-09-06 | identité multi-canal — UUID interne, pont vers les canaux |
 | 0.11.0 | 2026-09-06 | revue 1.3 — garanties mesurées, duplications supprimées |
 | 0.10.0 | 2026-09-06 | 1.3 — client modèle, registre des coûts, le compagnon répond |

@@ -95,7 +95,7 @@ async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
 
     sqlx::query(
         "insert into personnage_parametres_modele
-            (personnage_id, prompt_systeme_genere, prompt_systeme_hash, modele_cible)
+            (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible)
          values ($1, 'un prompt quelconque', 'empreinte', 'modele-x')",
     )
     .bind(COMPAGNON_A)
@@ -295,7 +295,7 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
     // Et une température de modèle absurde.
     let temperature = sqlx::query(
         "insert into personnage_parametres_modele
-            (personnage_id, prompt_systeme_genere, prompt_systeme_hash, modele_cible, temperature)
+            (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible, temperature)
          values ($1, 't', 'h', 'm', 9.00)",
     )
     .bind(COMPAGNON_B)
@@ -479,7 +479,7 @@ async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
         .expect("renommage");
 
     // --- Le compagnon dont le nom passe ---
-    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_A, Some("FR"), "modele-x")
+    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_A, Some("FR"), "modele-x", &compagnon::fixtures::sceau_de_test())
         .await
         .expect("validation");
     println!("compagnon « Léa »            -> {verdict:?}");
@@ -487,7 +487,7 @@ async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
 
     let (prompt, empreinte, valide): (String, String, Option<chrono::DateTime<chrono::Utc>>) =
         sqlx::query_as(
-            "select prompt_systeme_genere, prompt_systeme_hash, valide_le
+            "select prompt_systeme_genere, prompt_systeme_sceau, valide_le
                from personnage_parametres_modele where personnage_id = $1",
         )
         .bind(COMPAGNON_A)
@@ -514,7 +514,7 @@ async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
     println!("  activation -> permise");
 
     // --- Le compagnon dont le nom ne passe pas ---
-    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_B, Some("FR"), "modele-x")
+    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON_B, Some("FR"), "modele-x", &compagnon::fixtures::sceau_de_test())
         .await
         .expect("validation");
     println!("\ncompagnon « Ma petite fille » -> {verdict:?}");

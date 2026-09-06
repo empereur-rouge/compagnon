@@ -19,10 +19,10 @@
 //! des tests. C'est le texte qui compte, pas le fait que la fonction rende `Ok`.
 
 pub mod moderation;
+pub mod sceau;
 pub mod regles;
 
 use rust_decimal::Decimal;
-use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -112,13 +112,15 @@ pub struct Traits {
     pub longueur_reponse: String,
 }
 
-/// Un prompt composé, et son empreinte.
+/// Un prompt composé.
+///
+/// Ne porte plus son empreinte : sceller demande une **clé**, qui vit dans l'environnement du
+/// processus et non dans les traits. Composer reste une fonction pure de ce que l'utilisateur a
+/// choisi ; apposer le sceau est un second geste, et c'est [`sceau::Sceau`] qui en répond.
 #[derive(Debug, Clone)]
 pub struct Prompt {
     /// Le texte envoyé au modèle.
     pub texte: String,
-    /// SHA-256 hexadécimal du texte, pour détecter tout écart hors du processus.
-    pub empreinte: String,
 }
 
 /// Les cinq paliers par lesquels un curseur devient une phrase.
@@ -239,37 +241,9 @@ pub fn composer(traits: &Traits) -> Prompt {
     // 5. Règles fixes, en dernier
     t.push_str(&regles::bloc());
 
-    let empreinte = empreinte(&t);
-    Prompt {
-        texte: t,
-        empreinte,
-    }
+    Prompt { texte: t }
 }
 
-/// L'empreinte d'un texte de prompt, dans la forme exacte que la base stocke.
-///
-/// # Pourquoi une fonction pour une ligne
-///
-/// Parce que cette ligne était écrite **trois fois** — à la composition, à la vérification
-/// d'intégrité, et sur le chemin d'un message — et que c'est la formule dont dépend le seul
-/// point de contrôle de la modération. Un changement d'algorithme appliqué à deux endroits sur
-/// trois fait lire tous les prompts comme altérés, ou laisse passer un texte non validé.
-///
-/// C'est aussi ce qu'il faudra changer le jour où le sceau deviendra un HMAC dont la clé vit
-/// hors de la base : un seul endroit, au lieu de trois à retrouver.
-#[must_use]
-pub fn empreinte(texte: &str) -> String {
-    format!("{:x}", Sha256::digest(texte.as_bytes()))
-}
-
-/// Vrai si le texte correspond à l'empreinte qui l'accompagne.
-///
-/// La comparaison est écrite ici plutôt que chez ses deux appelants, pour la même raison que
-/// [`empreinte`] : ils doivent rester d'accord sans avoir à se connaître.
-#[must_use]
-pub fn sceau_valide(texte: &str, empreinte_attendue: &str) -> bool {
-    empreinte(texte) == empreinte_attendue
-}
 
 /// Décrit une composition, en préférant la fusion quand le couple est répertorié.
 ///
@@ -545,6 +519,7 @@ pub async fn valider(
     personnage_id: Uuid,
     code_pays: Option<&str>,
     modele_cible: &str,
+    sceau: &sceau::Sceau,
 ) -> Result<moderation::Verdict, ErreurBase> {
     let traits = charger(pool, personnage_id, code_pays).await?;
     let verdict = moderation::examiner_nom(pool, &traits.nom).await?;
@@ -554,21 +529,22 @@ pub async fn valider(
     let (statut, raison) = match &verdict {
         moderation::Verdict::Accepte => {
             let prompt = composer(&traits);
+            let appose = sceau.apposer(&prompt.texte);
             sqlx::query(
                 "insert into personnage_parametres_modele
-                    (personnage_id, prompt_systeme_genere, prompt_systeme_hash, modele_cible,
+                    (personnage_id, prompt_systeme_genere, prompt_systeme_sceau, modele_cible,
                      valide_le)
                  values ($1, $2, $3, $4, now())
                  on conflict (personnage_id) do update
                     set prompt_systeme_genere = excluded.prompt_systeme_genere,
-                        prompt_systeme_hash   = excluded.prompt_systeme_hash,
+                        prompt_systeme_sceau   = excluded.prompt_systeme_sceau,
                         modele_cible          = excluded.modele_cible,
                         version_prompt        = personnage_parametres_modele.version_prompt + 1,
                         valide_le             = now()",
             )
             .bind(personnage_id)
             .bind(&prompt.texte)
-            .bind(&prompt.empreinte)
+            .bind(&appose)
             .bind(modele_cible)
             .execute(&mut *tx)
             .await?;
@@ -645,7 +621,7 @@ pub enum Integrite {
 ///
 /// # Pourquoi cette fonction devait exister
 ///
-/// `prompt_systeme_hash` était écrit et **jamais relu**. Une empreinte que personne ne compare
+/// `prompt_systeme_sceau` était écrit et **jamais relu**. Une empreinte que personne ne compare
 /// n'est pas une garantie ; et comparée à elle seule, elle n'aurait rien attrapé d'utile — elle
 /// vit dans la même ligne que le texte qu'elle atteste, donc la console qui modifie l'un modifie
 /// l'autre. C'est un contrôle de cohérence, pas un sceau.
@@ -661,9 +637,10 @@ pub async fn verifier_integrite(
     pool: &PgPool,
     personnage_id: Uuid,
     code_pays: Option<&str>,
+    sceau: &sceau::Sceau,
 ) -> Result<Integrite, ErreurBase> {
     let stocke: Option<(String, String)> = sqlx::query_as(
-        "select prompt_systeme_genere, prompt_systeme_hash
+        "select prompt_systeme_genere, prompt_systeme_sceau
            from personnage_parametres_modele
           where personnage_id = $1 and valide_le is not null",
     )
@@ -675,12 +652,12 @@ pub async fn verifier_integrite(
         return Ok(Integrite::PasDePromptValide);
     };
 
-    if !sceau_valide(&texte, &empreinte) {
+    if !sceau.verifier(&texte, &empreinte) {
         return Ok(Integrite::TexteAltere);
     }
 
     let recompose = composer(&charger(pool, personnage_id, code_pays).await?);
-    Ok(if recompose.empreinte == empreinte {
+    Ok(if recompose.texte == texte {
         Integrite::Intacte
     } else {
         Integrite::DeriveDepuisValidation
@@ -806,16 +783,8 @@ mod tests {
         let prompt = composer(&lea());
         println!("=============== PROMPT COMPOSÉ ===============");
         println!("{}", prompt.texte);
-        println!(
-            "=============== empreinte : {} ===============",
-            &prompt.empreinte[..16]
-        );
+        println!("==============================================");
         assert!(prompt.texte.contains("Léa"));
-        assert_eq!(
-            prompt.empreinte.len(),
-            64,
-            "un SHA-256 fait 64 caractères hexadécimaux"
-        );
     }
 
     #[test]
@@ -917,38 +886,46 @@ mod tests {
     }
 
     #[test]
-    fn l_empreinte_change_avec_les_traits_et_pas_autrement() {
-        // L'empreinte sert à détecter un écart introduit hors du processus. Elle doit donc être
-        // strictement déterminée par le texte — deux compositions identiques la partagent, et
-        // le moindre changement de trait la fait bouger.
+    fn le_prompt_change_avec_les_traits_et_pas_autrement() {
+        // La composition doit être strictement déterminée par les traits : c'est ce qui permet
+        // à `verifier_integrite` de recomposer et de constater une dérive. La comparaison porte
+        // sur le TEXTE, et non sur son sceau — celui-ci demande une clé, et comparer des
+        // scellés reviendrait à éprouver le HMAC plutôt que la composition.
         let a = composer(&lea());
         let b = composer(&lea());
-        assert_eq!(
-            a.empreinte, b.empreinte,
-            "la composition doit être déterministe"
-        );
+        assert_eq!(a.texte, b.texte, "la composition doit être déterministe");
 
         let mut autre = lea();
         autre.curseurs[0].valeur = Decimal::new(10, 2);
         let c = composer(&autre);
-        println!("humour 0,70 -> {}", &a.empreinte[..16]);
-        println!("humour 0,10 -> {}", &c.empreinte[..16]);
+        println!("humour 0,70 -> {}", ligne_de_dosage(&a.texte, "humour"));
+        println!("humour 0,10 -> {}", ligne_de_dosage(&c.texte, "humour"));
         assert_ne!(
-            a.empreinte, c.empreinte,
+            a.texte, c.texte,
             "un curseur qui change de palier change le prompt"
         );
 
         let mut voisin = lea();
         voisin.curseurs[0].valeur = Decimal::new(75, 2);
+        let texte_voisin = composer(&voisin).texte;
         println!(
             "humour 0,75 -> {} (même palier que 0,70)",
-            &composer(&voisin).empreinte[..16]
+            ligne_de_dosage(&texte_voisin, "humour")
         );
         assert_eq!(
-            a.empreinte,
-            composer(&voisin).empreinte,
+            a.texte, texte_voisin,
             "à l'intérieur d'un palier, le prompt ne bouge pas"
         );
+    }
+
+    /// La ligne de dosage d'un curseur, pour que les sorties de test montrent ce qui change.
+    fn ligne_de_dosage(texte: &str, code: &str) -> String {
+        texte
+            .lines()
+            .find(|ligne| ligne.contains(code))
+            .unwrap_or("(absente)")
+            .trim()
+            .to_owned()
     }
 
     /// Extrait la section personnalité, pour que les sorties de test restent lisibles.

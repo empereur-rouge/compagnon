@@ -21,11 +21,15 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::db::{Base, ErreurBase, catalogues, personnages, utilisateurs};
-use crate::personnage::{self, Cible, moderation};
+use crate::personnage::{self, Cible, moderation, sceau};
 
 /// Ce qui a empêché une commande d'aboutir.
 #[derive(Debug, thiserror::Error)]
 pub enum ErreurCompagnon {
+    /// La clé de scellement est absente ou trop courte.
+    #[error("{0}")]
+    Config(#[from] crate::config::ErreurConfig),
+
     /// La base n'a pas répondu, ou a refusé.
     #[error("{0}")]
     Base(#[from] ErreurBase),
@@ -122,6 +126,15 @@ pub async fn montrer_catalogues(config: &Config) -> Result<(), ErreurCompagnon> 
     Ok(())
 }
 
+/// La clé de scellement, lue à la demande.
+///
+/// Trois commandes en ont besoin — créer, vérifier, montrer — et aucune autre. Lue ici plutôt
+/// que dans `Config` pour que `compagnon sonde` reste utilisable sans elle, au moment précis où
+/// l'on diagnostique un incident.
+fn sceau() -> Result<sceau::Sceau, ErreurCompagnon> {
+    Ok(sceau::Sceau::depuis_environnement()?)
+}
+
 /// Crée un compagnon à partir de choix, puis le soumet à la modération.
 ///
 /// # Errors
@@ -185,7 +198,8 @@ pub async fn creer(config: &Config, mots: &[&str]) -> Result<(), ErreurCompagnon
     let modele = champs
         .get("modele")
         .map_or("a-definir-phase-1-3", String::as_str);
-    let verdict = personnage::valider(pool, personnage_id, pays.as_deref(), modele).await?;
+    let verdict =
+        personnage::valider(pool, personnage_id, pays.as_deref(), modele, &sceau()?).await?;
 
     match verdict {
         moderation::Verdict::Accepte => {
@@ -219,7 +233,7 @@ pub async fn montrer(config: &Config, utilisateur: &str) -> Result<(), ErreurCom
     let traits = personnage::charger(base.pool(), personnage_id, pays.as_deref()).await?;
     let prompt = personnage::composer(&traits);
     println!("compagnon {personnage_id} — statut {statut}");
-    println!("empreinte {}", prompt.empreinte);
+    println!("sceau     {}", sceau()?.apposer(&prompt.texte));
     println!("\n{}", prompt.texte);
     Ok(())
 }
@@ -276,7 +290,9 @@ pub async fn activer(config: &Config, utilisateur: &str) -> Result<(), ErreurCom
 /// [`ErreurCompagnon`] si l'utilisateur n'a pas de compagnon, ou si la base refuse.
 pub async fn verifier(config: &Config, utilisateur: &str) -> Result<(), ErreurCompagnon> {
     let (base, personnage_id, pays) = compagnon_de(config, utilisateur).await?;
-    let etat = personnage::verifier_integrite(base.pool(), personnage_id, pays.as_deref()).await?;
+    let etat =
+        personnage::verifier_integrite(base.pool(), personnage_id, pays.as_deref(), &sceau()?)
+            .await?;
     println!("compagnon {personnage_id} : {etat:?}");
     match etat {
         personnage::Integrite::Intacte => println!("  le prompt validé décrit bien ce compagnon"),

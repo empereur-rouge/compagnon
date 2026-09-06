@@ -1,6 +1,6 @@
 [package]
 name = "compagnon"
-version = "0.12.0"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Plateforme de personnages conversationnels sur Telegram"
@@ -21,6 +21,12 @@ serde_json = "1.0.151"
 # SCRAM) : le déclarer en dépendance directe n'ajoute rien au binaire, c'est la même caisse à la
 # même version.
 sha2 = "0.10.9"
+# hmac : le sceau du prompt système. DÉJÀ dans l'arbre via sqlx-postgres (authentification
+# SCRAM), exactement comme sha2 — le déclarer en dépendance directe n'ajoute rien au binaire.
+# Le sceau a d'abord été un sha256 rangé dans la même ligne que le texte qu'il attestait, donc
+# forgeable par qui pouvait écrire cette ligne. La clé du HMAC vit dans l'environnement du
+# processus : la base ne contient plus de quoi fabriquer un sceau valide.
+hmac = "0.12.1"
 # PostgreSQL. Trois choix explicites dans cette liste de features :
 #
 # « tls-rustls-aws-lc-rs » et non natif : la base peut être ailleurs que sur la machine du

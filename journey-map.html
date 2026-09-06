@@ -1012,7 +1012,7 @@
               "opportunity": "Les garde-fous de sortie de la phase 1.8 : une règle tenue par un mécanisme qui relit la réponse, et non par une phrase dans le prompt.",
               "evidence": "",
               "frontstage": "Le message reçu dans Telegram, découpé en plusieurs envois si le modèle dépasse 4096 unités UTF-16.",
-              "backstage": "worker::traiter lit le compagnon actif (db::dialogue::ouvrir), vérifie l'empreinte du prompt, appelle ClientModele::repondre, envoie, inscrit le message sortant et la ligne de coût. Mesuré sur un 24B : 9,2 s, 471 jetons d'entrée, 52 de sortie, 0,000088 €.",
+              "backstage": "worker::traiter lit le compagnon actif (db::dialogue::ouvrir), vérifie le SCEAU du prompt — un HMAC dont la clé vit hors de la base — appelle ClientModele::repondre, inscrit la réponse, écrit la ligne de coût, envoie, puis confirme la réception. Mesuré sur un 24B : 8,5 s, 467 jetons d'entrée, 83 de sortie, 0,000100 €.",
               "support": "src/worker.rs, src/db/dialogue.rs, src/modele/http.rs, src/db/consommation.rs."
             },
             {
@@ -1038,8 +1038,8 @@
               "opportunity": "[Assumption] Distinguer une panne brève d'une panne longue, et proposer d'être prévenu au retour plutôt que de laisser réessayer à l'aveugle.",
               "evidence": "",
               "frontstage": "Un message neutre, qui ne joue pas le personnage : faire dire « je suis fatiguée » à l'assistant pour masquer une panne serait un mensonge, et le produit repose sur ce que la personne croit de lui. Aucun vocabulaire interne — ni code, ni nom de fournisseur.",
-              "backstage": "Le modèle a échoué. ErreurModele::merite_une_reprise décide : une panne passagère est remise en file (trois tentatives), une clé invalide ou un prompt altéré n'en consomme aucune. Quand il n'en reste plus, la personne est prévenue — un silence serait indiscernable d'un bot mort.",
-              "support": "src/worker.rs (echec_du_modele), src/modele/mod.rs."
+              "backstage": "Le modèle a échoué. ErreurModele::merite_une_reprise décide : une panne passagère est remise en file (trois tentatives), une clé invalide, un prompt altéré ou un sceau posé sans la clé n'en consomme aucune. Une réponse DÉJÀ produite dont l'envoi a échoué n'est jamais régénérée : elle est inscrite avant l'envoi, sans identifiant Telegram, et la reprise la renvoie telle quelle.",
+              "support": "src/worker.rs (echec_du_modele, livrer), src/db/dialogue.rs."
             }
           ]
         }

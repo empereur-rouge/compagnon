@@ -28,6 +28,20 @@ pub const JETON: &str = "123456789:AAExempleDeJetonQuiNeSertAAbsolumen";
 /// Secret de webhook d'exemple, dans les bornes acceptées par Telegram.
 pub const SECRET: &str = "un-secret-de-quarante-huit-caracteres-exactement";
 
+/// Clé de scellement d'exemple, au-dessus de la longueur minimale exigée.
+///
+/// Une seule définition : recopiée, elle aurait divergé, et un test scellant avec une clé et
+/// vérifiant avec une autre échouerait loin de sa cause.
+pub const CLE_SCEAU: &str = "une-cle-de-scellement-de-test-de-quarante-huit-car";
+
+/// Le sceau des tests, construit sur [`CLE_SCEAU`].
+#[must_use]
+pub fn sceau_de_test() -> crate::personnage::sceau::Sceau {
+    crate::personnage::sceau::Sceau::nouveau(crate::secret::Secret::nouveau(
+        CLE_SCEAU.to_owned(),
+    ))
+}
+
 /// URL de base **fictive**, pour les tests qui ne touchent pas à la base.
 ///
 /// Cinq appelants passaient chacun leur littéral à `config_de_test` alors qu'aucun n'ouvre de

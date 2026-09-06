@@ -26,6 +26,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::ErreurBase;
+use crate::personnage::sceau::Sceau;
 
 /// À qui l'utilisateur parle, et avec quel texte.
 #[derive(Debug, Clone)]
@@ -79,7 +80,11 @@ pub enum Interlocuteur {
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si une lecture ou l'ouverture du fil échoue.
-pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur, ErreurBase> {
+pub async fn ouvrir(
+    pool: &PgPool,
+    utilisateur_id: Uuid,
+    sceau: &Sceau,
+) -> Result<Interlocuteur, ErreurBase> {
     // Jointe à la même requête plutôt que demandée séparément : c'est ce qui empêche un futur
     // appelant d'ouvrir un compagnon sans avoir vérifié l'âge. Le coût est nul — la ligne est
     // déjà lue par la clé étrangère.
@@ -91,7 +96,7 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur
     // découle du premier (migration 0004), mais le worker est le dernier à pouvoir refuser
     // avant que le texte parte au modèle, et une garantie tenue deux fois ne coûte rien ici.
     let trouve: Option<(Uuid, String, String)> = sqlx::query_as(
-        "select p.id, m.prompt_systeme_genere, m.prompt_systeme_hash
+        "select p.id, m.prompt_systeme_genere, m.prompt_systeme_sceau
            from personnages p
            join personnage_parametres_modele m on m.personnage_id = p.id
           where p.utilisateur_id = $1
@@ -107,7 +112,7 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur
         return Ok(Interlocuteur::Aucun);
     };
 
-    if !crate::personnage::sceau_valide(&prompt_systeme, &empreinte) {
+    if !sceau.verifier(&prompt_systeme, &empreinte) {
         return Ok(Interlocuteur::PromptAltere { personnage_id });
     }
 
@@ -237,4 +242,75 @@ pub async fn inscrire_message(
 
     tx.commit().await?;
     Ok(id)
+}
+
+/// Une réponse déjà produite qui n'est jamais partie.
+#[derive(Debug, Clone)]
+pub struct ReponseEnAttente {
+    /// La ligne à confirmer une fois l'envoi abouti.
+    pub message_id: Uuid,
+    /// Le texte à renvoyer, tel qu'il a été généré.
+    pub texte: String,
+}
+
+/// Cherche une réponse déjà générée pour ce message, et pas encore délivrée.
+///
+/// # Ce que cette fonction fait gagner
+///
+/// Une réponse produite dont l'envoi échoue — un `502` de Telegram, un délai — était jetée : la
+/// tâche repartait du début et **rappelait le modèle**. Trois générations facturées pour une
+/// panne qui n'a rien à voir avec le modèle, mesuré.
+///
+/// # Comment une réponse en attente se distingue d'une vieille
+///
+/// Par sa date, comparée à celle du message auquel elle répond. Une reprise réinscrit le message
+/// entrant de façon idempotente, donc `apres` garde la date de la **première** tentative : la
+/// réponse de cette tâche lui est postérieure. La réponse orpheline d'une tâche abandonnée, elle,
+/// est antérieure au message suivant — et ne sera donc jamais renvoyée à contretemps.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si la lecture échoue.
+pub async fn reponse_a_renvoyer(
+    pool: &PgPool,
+    conversation_id: Uuid,
+    apres: Uuid,
+) -> Result<Option<ReponseEnAttente>, ErreurBase> {
+    Ok(sqlx::query_as(
+        "select m.id, coalesce(m.contenu, '')
+           from messages m
+          where m.conversation_id = $1
+            and m.role = 'personnage'
+            and m.identifiant_telegram is null
+            and m.cree_le > (select cree_le from messages where id = $2)
+          order by m.cree_le desc
+          limit 1",
+    )
+    .bind(conversation_id)
+    .bind(apres)
+    .fetch_optional(pool)
+    .await?
+    .map(|(message_id, texte)| ReponseEnAttente { message_id, texte }))
+}
+
+/// Note qu'une réponse est bien parvenue, en lui attachant son identifiant Telegram.
+///
+/// C'est ce qui donne son sens à la colonne : `identifiant_telegram` non nul signifie **« la
+/// personne l'a reçu »**. La mémoire de la phase 2 devra ne lire que ces lignes-là — une
+/// réponse générée et jamais délivrée n'a pas eu lieu dans la conversation.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si l'écriture échoue.
+pub async fn confirmer_envoi(
+    pool: &PgPool,
+    message_id: Uuid,
+    identifiant_telegram: Option<i64>,
+) -> Result<(), ErreurBase> {
+    sqlx::query("update messages set identifiant_telegram = $2 where id = $1")
+        .bind(message_id)
+        .bind(identifiant_telegram)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
