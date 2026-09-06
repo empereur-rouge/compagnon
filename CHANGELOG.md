@@ -5,6 +5,39 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.14.0] - 2026-09-06
+
+### Fixed
+
+- **fix(worker)** : un échec d'envoi Telegram faisait **repayer la génération**. La réponse était
+  produite, l'envoi ratait, la tâche repartait du début et rappelait le modèle — trois
+  générations facturées pour un `502`, et le test d'alors l'affirmait
+  (`assert_eq!(lignes.len(), 3, "un appel payé par tentative")`). La réponse est désormais
+  inscrite **avant** l'envoi, sans `identifiant_telegram`, ce qui la rend renvoyable : une reprise
+  la retrouve et la renvoie telle quelle. Mesuré : un appel au lieu de trois.
+
+### Changed
+
+- **change(db)** : `identifiant_telegram` non nul signifie désormais « la personne l'a reçu ».
+  Une réponse générée et jamais délivrée existe en base mais n'a pas eu lieu dans la
+  conversation — la mémoire de la phase 2 devra ne lire que les lignes confirmées, sans quoi un
+  compagnon se souviendrait d'avoir dit ce que personne n'a lu.
+- **change(worker)** : `livrer` réunit l'épilogue de la production et celui du renvoi. Les deux
+  ont exactement la même fin — envoyer, confirmer, rendre la tâche — et l'écrire deux fois
+  l'aurait fait diverger.
+
+### Added
+
+- **feat(db)** : `dialogue::reponse_a_renvoyer` et `dialogue::confirmer_envoi`. Une réponse en
+  attente se distingue d'une réponse orpheline par sa date, comparée à celle du message auquel
+  elle répond : l'inscription idempotente de l'entrant garde la date de la première tentative.
+- **test** : `un_envoi_refuse_par_telegram_ne_fait_pas_repayer_la_generation` et
+  `une_reponse_bloquee_puis_debloquee_part_sans_nouvelle_generation` — le second vérifie que
+  c'est bien le texte d'origine qui part quand Telegram redevient joignable.
+- **test(harnais)** : `casser_l_envoi_n_fois`, pour observer ce qui se passe **après** une panne
+  d'envoi. Démonter un montage prioritaire aurait demandé un `reset()` du serveur, qui efface
+  aussi l'historique des appels — c'est-à-dire ce que le test compte.
+
 ## [0.13.0] - 2026-09-06
 
 Le sceau du prompt cesse d'être forgeable depuis la base.
@@ -786,6 +819,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.14.0 | 2026-09-06 | une réponse produite n'est plus régénérée |
 | 0.13.0 | 2026-09-06 | sceau du prompt à clé — HMAC hors base |
 | 0.12.0 | 2026-09-06 | identité multi-canal — UUID interne, pont vers les canaux |
 | 0.11.0 | 2026-09-06 | revue 1.3 — garanties mesurées, duplications supprimées |

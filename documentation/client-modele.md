@@ -203,6 +203,26 @@ sert avec `merite_une_reprise` pour décider s'il faut les consommer. Une clé i
 un appel, un délai dépassé en trois. Quand elles sont épuisées, la personne est prévenue — un
 silence serait indiscernable d'un bot mort.
 
+## Une réponse produite n'est jamais régénérée
+
+La réponse est inscrite dans `messages` **avant** l'envoi, sans `identifiant_telegram`. Si
+l'envoi échoue, la reprise la retrouve et la renvoie telle quelle au lieu de rappeler le modèle.
+
+Le comportement d'avant était mesurable, et son test l'affirmait :
+`assert_eq!(lignes.len(), 3, "un appel payé par tentative")`. Trois générations facturées pour un
+`502` de Telegram — une panne qui n'a rien à voir avec le modèle. C'est désormais **une**.
+
+**Ce que la colonne signifie.** `identifiant_telegram` non nul veut dire « la personne l'a
+reçu ». Une réponse générée et jamais délivrée existe en base mais n'a pas eu lieu dans la
+conversation : la mémoire de la phase 2 devra ne lire que les lignes confirmées, sans quoi un
+compagnon se souviendrait d'avoir dit ce que personne n'a lu.
+
+**Comment une réponse en attente se distingue d'une vieille.** Par sa date, comparée à celle du
+message auquel elle répond. Une reprise réinscrit le message entrant de façon idempotente, donc
+sa date est celle de la **première** tentative : la réponse de cette tâche lui est postérieure,
+celle d'une tâche abandonnée ne l'est pas. Une réponse orpheline n'est donc jamais renvoyée à
+contretemps.
+
 ## Ce qui reste à faire, et qui a été mesuré
 
 **Le modèle n'obéit pas toujours aux règles fixes.** Sur le premier essai de bout en bout, à un

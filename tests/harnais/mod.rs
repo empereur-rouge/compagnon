@@ -138,6 +138,25 @@ impl FauxTelegram {
             .await;
     }
 
+    /// Fait échouer `sendMessage` exactement `combien` fois, puis laisse le montage nominal
+    /// reprendre la main.
+    ///
+    /// Sert à observer ce qui se passe **après** une panne d'envoi, ce que
+    /// [`Self::casser_l_envoi`] ne permet pas : démonter un montage prioritaire demanderait un
+    /// `reset()` du serveur, qui effacerait aussi l'historique des appels — c'est-à-dire ce que
+    /// le test compte.
+    pub async fn casser_l_envoi_n_fois(&self, combien: u64) {
+        Mock::given(method("POST"))
+            .and(path(format!("/bot{JETON}/sendMessage")))
+            .respond_with(ResponseTemplate::new(500).set_body_json(
+                json!({"ok": false, "error_code": 500, "description": "Internal Server Error"}),
+            ))
+            .up_to_n_times(combien)
+            .with_priority(1)
+            .mount(&self.serveur)
+            .await;
+    }
+
     /// Ralentit `sendMessage`, pour observer ce qui se passe pendant qu'une tâche est en vol.
     pub async fn ralentir_l_envoi(&self, duree: Duration) {
         Mock::given(method("POST"))
