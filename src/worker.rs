@@ -34,7 +34,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::db::dialogue::{Auteur, Interlocuteur};
-use crate::db::{Base, consommation, dialogue, file, utilisateurs};
+use crate::db::{Base, consommation, dialogue, file};
 use crate::error::ErrorCode;
 use crate::modele::{ClientModele, ContexteConversation, ErreurModele, Role, Tour};
 use crate::telegram::Canal;
@@ -54,9 +54,6 @@ pub const WORKERS: usize = 4;
 /// le plus fréquent : un bail trop court ferait reprendre par un second worker une tâche que le
 /// premier est encore en train de traiter, et l'utilisateur recevrait deux réponses.
 const BAIL: Duration = Duration::from_secs(120);
-
-/// Nombre de prises au-delà duquel une tâche est abandonnée.
-const TENTATIVES_MAX: i16 = 3;
 
 /// Repos après un échec de tâche, avant de reprendre la boucle.
 ///
@@ -268,31 +265,16 @@ async fn traiter(
         return Issue::Echouee;
     };
 
-    // La vérification d'âge est demandée ici et non à l'entrée : c'est le worker qui parle à
-    // l'utilisateur, et un refus doit produire une réponse plutôt qu'un silence. En phase 1.3,
-    // c'est au même endroit qu'elle empêchera l'appel au modèle.
-    let verifie = match utilisateurs::age_verifie(base.pool(), recu.utilisateur_id).await {
-        Ok(verifie) => verifie,
-        Err(erreur) => {
-            tracing::error!(tache = %tache.id, %erreur, "vérification d'âge impossible");
-            rendre_en_echec(base, tache, ErrorCode::Interne).await;
-            return Issue::Echouee;
-        }
-    };
-
-    if !verifie {
-        tracing::info!(
-            chat_id = recu.chat_id,
-            "âge non vérifié, accès au moteur refusé"
-        );
-        return conclure(base, canal, tache, &recu, VERIFICATION_REQUISE).await;
-    }
-
-    // À qui parle-t-on, et avec quel texte. Cette lecture décide aussi de ce qu'on ne fait
-    // pas : sans compagnon validé, aucun appel au modèle n'a lieu — donc rien n'est facturé
-    // pour quelqu'un qui n'a encore rien à qui parler.
+    // Un seul point de décision, et un `match` exhaustif : la vérification d'âge, l'existence
+    // d'un compagnon actif et l'intégrité de son prompt sont désormais trois issues d'une même
+    // lecture. Aucune ne peut être oubliée par un chemin futur — la phase 2 va allonger cette
+    // fonction.
     let compagnon = match dialogue::ouvrir(base.pool(), recu.utilisateur_id).await {
         Ok(Interlocuteur::Pret(compagnon)) => compagnon,
+        Ok(Interlocuteur::AgeNonVerifie) => {
+            tracing::info!(chat_id = recu.chat_id, "âge non vérifié, accès au moteur refusé");
+            return conclure(base, canal, tache, &recu, VERIFICATION_REQUISE).await;
+        }
         Ok(Interlocuteur::Aucun) => {
             tracing::info!(chat_id = recu.chat_id, "aucun compagnon actif");
             return conclure(base, canal, tache, &recu, AUCUN_COMPAGNON).await;
@@ -351,7 +333,13 @@ async fn traiter(
     // renverserait ce raisonnement (voir `db::CONNEXIONS_MAX`).
     let reponse = match modele.repondre(&contexte).await {
         Ok(reponse) => reponse,
-        Err(erreur) => return echec_du_modele(base, canal, modele, tache, &recu, &compagnon, &erreur).await,
+        Err(erreur) => {
+            // Écrite ici, à côté des deux autres inscriptions : « un appel payé, une ligne »
+            // se lit alors dans `traiter`, et non éparpillé chez les fonctions qui décident
+            // d'autre chose.
+            inscrire_au_registre(base, modele, &recu, &compagnon, None, None).await;
+            return echec_du_modele(base, canal, tache, &recu, &erreur).await;
+        }
     };
 
     if reponse.tronquee {
@@ -374,8 +362,12 @@ async fn traiter(
         "réponse produite"
     );
 
-    let texte = reponse.texte.clone();
-    match canal.envoyer_texte(recu.chat_id, &texte).await {
+    let envoi = canal.envoyer_texte(recu.chat_id, &reponse.texte).await;
+
+    // Le message sortant n'est inscrit que si l'envoi a abouti : une ligne dans `messages`
+    // signifie « la personne l'a reçu », et la phase 2 relira cette table pour composer
+    // l'historique. Un message jamais parvenu n'a pas eu lieu dans la conversation.
+    let message_id = match &envoi {
         Ok(identifiants) => {
             tracing::info!(
                 chat_id = recu.chat_id,
@@ -383,73 +375,51 @@ async fn traiter(
                 morceaux = identifiants.len(),
                 "réponse envoyée"
             );
-
-            let message_id = match dialogue::inscrire_message(
+            dialogue::inscrire_message(
                 base.pool(),
                 compagnon.conversation_id,
                 Auteur::Compagnon,
-                &texte,
+                &reponse.texte,
                 identifiants.first().copied(),
             )
             .await
-            {
-                Ok(id) => Some(id),
-                Err(erreur) => {
-                    // La personne a sa réponse : la tâche ne doit pas être reprise, ce qui la
-                    // lui enverrait deux fois. On perd la trace, pas le message.
-                    tracing::error!(tache = %tache.id, %erreur, "réponse envoyée mais non inscrite");
-                    None
-                }
-            };
+            .inspect_err(|erreur| {
+                // La personne a sa réponse : la tâche ne doit pas être reprise, ce qui la lui
+                // enverrait deux fois. On perd la trace, pas le message.
+                tracing::error!(tache = %tache.id, %erreur, "réponse envoyée mais non inscrite");
+            })
+            .ok()
+        }
+        Err(_) => None,
+    };
 
-            inscrire_au_registre(
-                base,
-                modele,
-                &recu,
-                &compagnon,
-                message_id,
-                Some(&reponse),
-                cout_eur,
-                consommation::Statut::Ok,
-            )
-            .await;
+    // Le modèle a été payé, que Telegram accepte ou non. Écrite hors du `match`, la ligne
+    // vaut pour les deux issues : un coût omis parce que l'envoi a raté est un coût qui
+    // manquera dans la marge, et la reprise en produira un second.
+    inscrire_au_registre(base, modele, &recu, &compagnon, message_id, Some(&reponse)).await;
 
+    match envoi {
+        Ok(_) => {
             clore(base, tache, "tâche traitée mais non close").await;
             Issue::Close
         }
+        Err(erreur) if erreur.merite_une_reprise() => {
+            tracing::warn!(
+                chat_id = recu.chat_id,
+                tentative = tache.tentatives,
+                attente = ?erreur.attendre(),
+                %erreur,
+                "réponse non envoyée, tâche remise en file"
+            );
+            rendre_en_echec(base, tache, ErrorCode::EnvoiImpossible).await;
+            Issue::Echouee
+        }
         Err(erreur) => {
-            // Le modèle a été payé, que Telegram accepte ou non. La ligne est inscrite avant
-            // toute décision de reprise : un coût qu'on omet parce que l'envoi a raté est un
-            // coût qui manquera dans la marge, et la reprise en produira un second.
-            inscrire_au_registre(
-                base,
-                modele,
-                &recu,
-                &compagnon,
-                None,
-                Some(&reponse),
-                cout_eur,
-                consommation::Statut::Ok,
-            )
-            .await;
-
-            if erreur.merite_une_reprise() {
-                tracing::warn!(
-                    chat_id = recu.chat_id,
-                    tentative = tache.tentatives,
-                    attente = ?erreur.attendre(),
-                    %erreur,
-                    "réponse non envoyée, tâche remise en file"
-                );
-                rendre_en_echec(base, tache, ErrorCode::EnvoiImpossible).await;
-                Issue::Echouee
-            } else {
-                // Un utilisateur qui bloque le bot n'est pas un incident, et réessayer
-                // referait exactement la même erreur : la tâche est close, pas reprise.
-                tracing::info!(chat_id = recu.chat_id, %erreur, "refus définitif de Telegram");
-                clore(base, tache, "tâche abandonnée mais non close").await;
-                Issue::Close
-            }
+            // Un utilisateur qui bloque le bot n'est pas un incident, et réessayer referait
+            // exactement la même erreur : la tâche est close, pas reprise.
+            tracing::info!(chat_id = recu.chat_id, %erreur, "refus définitif de Telegram");
+            clore(base, tache, "tâche abandonnée mais non close").await;
+            Issue::Close
         }
     }
 }
@@ -508,29 +478,12 @@ async fn conclure(
 async fn echec_du_modele(
     base: &Base,
     canal: &Canal,
-    modele: &dyn ClientModele,
     tache: &file::Tache,
     recu: &Recu,
-    compagnon: &dialogue::Compagnon,
     erreur: &ErreurModele,
 ) -> Issue {
-    // Un appel qui échoue après le début de la génération est souvent facturé. Le coût réel
-    // est inconnu — le fournisseur n'a rien rendu — mais la ligne existe, ce qui rend l'échec
-    // visible dans le registre au lieu de le laisser invisible dans la marge.
-    inscrire_au_registre(
-        base,
-        modele,
-        recu,
-        compagnon,
-        None,
-        None,
-        rust_decimal::Decimal::ZERO,
-        consommation::Statut::Echec,
-    )
-    .await;
-
     let rejouable = erreur.merite_une_reprise();
-    let reste_des_tentatives = tache.tentatives < TENTATIVES_MAX;
+    let reste_des_tentatives = tache.tentatives < file::TENTATIVES_MAX;
 
     if rejouable && reste_des_tentatives {
         tracing::warn!(
@@ -553,10 +506,9 @@ async fn echec_du_modele(
     if let Err(erreur_envoi) = canal.envoyer_texte(recu.chat_id, INDISPONIBLE).await {
         tracing::warn!(chat_id = recu.chat_id, %erreur_envoi, "excuse non envoyée");
     }
-    // `tentatives_max = 0` : la tâche passe en `echec` sans nouvelle reprise, puisque la
-    // personne vient d'être prévenue. La reprendre lui écrirait deux fois.
+    // Abandon franc : la personne vient d'être prévenue, la reprendre lui écrirait deux fois.
     if let Err(erreur_file) =
-        file::echouer(base.pool(), tache.id, i32::from(ErrorCode::Interne.code()), 0).await
+        file::abandonner(base.pool(), tache.id, i32::from(ErrorCode::Interne.code())).await
     {
         tracing::error!(tache = %tache.id, %erreur_file, "tâche abandonnée et non rendue");
     }
@@ -568,7 +520,12 @@ async fn echec_du_modele(
 /// Ne rend pas d'erreur, et c'est délibéré : un registre qui refuse une écriture ne doit pas
 /// faire perdre à quelqu'un une réponse déjà produite et déjà payée. La perte est journalisée
 /// pour se retrouver dans l'écart avec la facture du fournisseur.
-#[allow(clippy::too_many_arguments)]
+///
+/// Le statut et le coût sont **dérivés** de la présence d'une réponse, et non passés. Ils
+/// l'étaient, et les trois sites d'appel obéissaient alors à une règle qu'aucun d'eux
+/// n'énonçait : « une réponse ⇒ `Ok` et son coût, pas de réponse ⇒ `Echec` et zéro ». Le jour
+/// où un quatrième appelant aurait passé une réponse avec `Echec`, le registre aurait menti
+/// sans qu'aucun test ne l'attrape — la cohérence à deux couches que ce projet traque ailleurs.
 async fn inscrire_au_registre(
     base: &Base,
     modele: &dyn ClientModele,
@@ -576,9 +533,19 @@ async fn inscrire_au_registre(
     compagnon: &dialogue::Compagnon,
     message_id: Option<uuid::Uuid>,
     reponse: Option<&crate::modele::ReponseModele>,
-    cout_eur: rust_decimal::Decimal,
-    statut: consommation::Statut,
 ) {
+    let cout_eur = reponse.map_or(rust_decimal::Decimal::ZERO, |r| {
+        modele.cout_eur(r.unites_entree, r.unites_sortie)
+    });
+    let statut = if reponse.is_some() {
+        consommation::Statut::Ok
+    } else {
+        // Un appel qui échoue après le début de la génération est souvent facturé. Le montant
+        // réel est inconnu — le fournisseur n'a rien rendu — mais la ligne existe, ce qui rend
+        // l'échec visible dans le registre au lieu de le laisser invisible dans la marge.
+        consommation::Statut::Echec
+    };
+
     let appel = consommation::Appel {
         utilisateur_id: recu.utilisateur_id,
         conversation_id: Some(compagnon.conversation_id),
@@ -621,14 +588,7 @@ async fn clore(base: &Base, tache: &file::Tache, motif: &'static str) {
 
 /// Rend une tâche en échec, en journalisant si même cela échoue.
 async fn rendre_en_echec(base: &Base, tache: &file::Tache, code: ErrorCode) {
-    if let Err(erreur) = file::echouer(
-        base.pool(),
-        tache.id,
-        i32::from(code.code()),
-        TENTATIVES_MAX,
-    )
-    .await
-    {
+    if let Err(erreur) = file::echouer(base.pool(), tache.id, i32::from(code.code())).await {
         tracing::error!(tache = %tache.id, %erreur, "tâche en échec et non rendue");
     }
 }

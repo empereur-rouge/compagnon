@@ -46,11 +46,6 @@ impl Secret {
         &self.0
     }
 
-    /// Vrai si la valeur est vide — pour valider une configuration sans la lire.
-    #[must_use]
-    pub fn est_vide(&self) -> bool {
-        self.0.is_empty()
-    }
 
     /// Le nombre de caractères, pour un message d'erreur qui aide sans divulguer.
     #[must_use]

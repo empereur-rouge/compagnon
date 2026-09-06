@@ -38,13 +38,55 @@ tenait pas. Chacune reproduite sur un PostgreSQL réel avant correctif.
   un sceau, franchissable en une instruction. Un HMAC dont la clé vivrait hors de la base est
   **proposé, non appliqué** — c'est une décision de déploiement.
 
+### Changed
+
+- **change(panne)** : la table de reprise sur code HTTP rejoint `crate::panne`
+  (`reprise_pour_statut`). Elle était écrite deux fois — Telegram et modèle — et c'est la partie
+  qui **change** : un fournisseur ajoute un `529`, un autre veut `408`. Le module avait été créé
+  pour ce motif exact et s'était arrêté à la classification du transport.
+- **change(panne)** : `client_http` — un constructeur de client HTTP partagé. Trois endroits en
+  bâtissaient un, avec trois traitements de l'échec ; la sonde `/health` **empruntait la variante
+  d'erreur du canal Telegram** pour rapporter l'échec de son propre client, envoyant l'exploitant
+  chercher au mauvais endroit. Plus aucun type d'erreur ne porte de `reqwest::Error` :
+  `ErreurCanal::Client` et `ErreurCli::Injoignable` portent une `Panne`.
+- **change(modele)** : `ErreurModele` dérive `Clone`, et l'énumération parallèle du double
+  disparaît. Cette copie manuscrite avait déjà oublié `RefusApplicatif` et `Tronquee` — les deux
+  variantes ajoutées après mesure sur un vrai serveur, dont la seule non rejouable. Le
+  comportement du worker face à elle n'était éprouvable par aucun test.
+- **change(db)** : `file::abandonner` remplace `file::echouer(…, 0)`, et `TENTATIVES_MAX` descend
+  dans `db::file`. La borne de reprise est une politique de la file, pas un nombre que ses
+  appelants choisissent — rien n'empêchait un futur appelant d'écrire `7`.
+- **change(worker)** : `inscrire_au_registre` dérive le statut et le coût de la présence d'une
+  réponse au lieu de les recevoir. Les trois sites obéissaient à une règle qu'aucun n'énonçait ;
+  un quatrième aurait pu faire mentir le registre sans qu'aucun test ne l'attrape.
+- **change(worker)** : les trois contrôles — âge, compagnon actif, empreinte du prompt — sont
+  réunis dans `Interlocuteur`, donc dans un `match` exhaustif. Ils n'étaient tenus ensemble que
+  par l'**ordre de deux instructions** dans une fonction que la phase 2 va allonger.
+- **change(personnage)** : `empreinte` et `sceau_valide` — la formule était écrite trois fois,
+  et c'est celle dont dépend le seul point de contrôle de la modération. C'est aussi le seul
+  endroit à changer le jour où le sceau deviendra un HMAC.
+- **change(modele)** : `ConfigModele` dérive `Debug`. L'implémentation manuscrite reproduisait
+  exactement le dérivé — sauf qu'un dixième champ en aurait été silencieusement absent, donc
+  absent de `compagnon modele essai`, l'outil dont la raison d'être est de montrer la
+  configuration réelle.
+
 ### Added
 
+- **feat(modele)** : `ErreurModele::ReponseIllisible` — un corps arrivé entier et non conforme,
+  qui **ne se rejoue pas**, distinct d'un corps interrompu qui se rejoue. Sans elle, une
+  `MODELE_API_BASE` désignant un autre service consommait trois générations facturées avant
+  d'être abandonnée.
 - **test** : `le_registre_ne_se_vide_pas_et_aucune_ligne_ne_nait_orpheline`,
   `reecrire_le_prompt_valide_revoque_la_validation`,
   `revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider`,
   `reecrire_le_prompt_en_console_desactive_le_compagnon` — les deux barrières du prompt sont
   désormais éprouvées séparément, pour deux gestes de console différents.
+- **test** : `un_corps_non_conforme_ne_se_rejoue_pas`.
+- **test(harnais)** : `prete_a_converser` et `composer_les_traits_avec` — le préambule commun
+  était recopié huit fois dans cinq fichiers, et la fabrique en SQL brut de `tests/garanties.rs`
+  avait **déjà divergé** : elle résolvait les codes de catalogue sans le filtre `actif` que la
+  production applique. C'est le défaut que `db::personnages` documente comme déjà survenu, revenu
+  par la porte des tests.
 
 ## [0.10.0] - Unreleased
 

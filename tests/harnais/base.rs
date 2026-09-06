@@ -249,6 +249,21 @@ impl BaseDeTest {
         .rows_affected()
     }
 
+    /// Un utilisateur d'âge vérifié, avec un compagnon actif : l'état d'où part toute
+    /// conversation, et donc le préambule de presque tous les tests.
+    ///
+    /// Les deux appels étaient enchaînés à la main dans cinq fichiers, huit fois — la
+    /// trajectoire même que le commentaire de [`Self::compagnon_actif`] raconte, réintroduite
+    /// un niveau au-dessus.
+    ///
+    /// # Panics
+    ///
+    /// Si une écriture échoue, ou si la modération refuse le nom donné.
+    pub async fn prete_a_converser(&self, utilisateur_id: i64, nom: &str) -> Uuid {
+        self.verifier_age(utilisateur_id).await;
+        self.compagnon_actif(utilisateur_id, nom).await
+    }
+
     /// Le statut d'un compagnon et l'état de sa validation.
     ///
     /// # Panics

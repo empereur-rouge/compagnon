@@ -139,7 +139,7 @@ pub struct Appel<'a> {
 ///
 /// N'est **jamais** appelée dans la même transaction que l'appel au fournisseur : le pool est
 /// dimensionné pour que personne ne tienne une connexion pendant une seconde de calcul GPU
-/// (voir [`super::CONNEXIONS_MAX`]).
+/// (voir la constante `CONNEXIONS_MAX` de `db`).
 ///
 /// # Errors
 ///

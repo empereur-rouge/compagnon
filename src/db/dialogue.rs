@@ -22,7 +22,6 @@
 //! L'empreinte vit dans la même ligne que le texte : la console qui modifie l'un peut modifier
 //! l'autre. C'est un contrôle de cohérence, pas un sceau — et c'est déjà ce qui manquait.
 
-use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -31,21 +30,33 @@ use super::ErreurBase;
 /// À qui l'utilisateur parle, et avec quel texte.
 #[derive(Debug, Clone)]
 pub struct Compagnon {
-    /// Le compagnon actif.
-    pub personnage_id: Uuid,
     /// Le fil, créé au premier message.
     pub conversation_id: Uuid,
-    /// Le nom que l'utilisateur lui a donné.
-    pub nom: String,
     /// Le prompt système **validé**, tel quel.
     pub prompt_systeme: String,
 }
 
 /// L'état de la relation, du point de vue du worker.
+///
+/// # Pourquoi un seul énuméré plutôt que plusieurs contrôles
+///
+/// La vérification d'âge était un `if` autonome, avant l'ouverture du compagnon, sans aucun
+/// lien de type avec elle. Les deux contrôles n'étaient donc tenus ensemble que par l'**ordre
+/// de deux instructions** dans une fonction qui va s'allonger : la phase 2 y insérera le
+/// chargement de l'historique et la compaction. C'est le moment précis où un ordre se perd.
+///
+/// Réunis ici, ils deviennent un `match` exhaustif : le compilateur refuse d'oublier une
+/// branche, et il n'existe plus de chemin qui produise un [`Compagnon`] sans les avoir tous
+/// franchis.
 #[derive(Debug, Clone)]
 pub enum Interlocuteur {
     /// Tout est en place.
-    Pret(Box<Compagnon>),
+    Pret(Compagnon),
+
+    /// L'utilisateur n'a pas passé la vérification d'âge.
+    ///
+    /// Le défaut est sûr : un utilisateur inconnu n'a rien vérifié, donc n'accède à rien.
+    AgeNonVerifie,
     /// L'utilisateur n'a pas encore de compagnon actif et validé.
     ///
     /// Un seul cas pour trois causes — aucun compagnon, un brouillon, un prompt non validé —
@@ -69,11 +80,18 @@ pub enum Interlocuteur {
 ///
 /// [`ErreurBase::Requete`] si une lecture ou l'ouverture du fil échoue.
 pub async fn ouvrir(pool: &PgPool, utilisateur_id: i64) -> Result<Interlocuteur, ErreurBase> {
+    // Jointe à la même requête plutôt que demandée séparément : c'est ce qui empêche un futur
+    // appelant d'ouvrir un compagnon sans avoir vérifié l'âge. Le coût est nul — la ligne est
+    // déjà lue par la clé étrangère.
+    if !super::utilisateurs::age_verifie(pool, utilisateur_id).await? {
+        return Ok(Interlocuteur::AgeNonVerifie);
+    }
+
     // `statut = 'actif'` **et** `valide_le is not null` : la base garantit déjà que le second
     // découle du premier (migration 0004), mais le worker est le dernier à pouvoir refuser
     // avant que le texte parte au modèle, et une garantie tenue deux fois ne coûte rien ici.
-    let trouve: Option<(Uuid, String, String, String)> = sqlx::query_as(
-        "select p.id, p.nom, m.prompt_systeme_genere, m.prompt_systeme_hash
+    let trouve: Option<(Uuid, String, String)> = sqlx::query_as(
+        "select p.id, m.prompt_systeme_genere, m.prompt_systeme_hash
            from personnages p
            join personnage_parametres_modele m on m.personnage_id = p.id
           where p.utilisateur_id = $1
@@ -85,22 +103,20 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: i64) -> Result<Interlocuteur,
     .fetch_optional(pool)
     .await?;
 
-    let Some((personnage_id, nom, prompt_systeme, empreinte)) = trouve else {
+    let Some((personnage_id, prompt_systeme, empreinte)) = trouve else {
         return Ok(Interlocuteur::Aucun);
     };
 
-    if format!("{:x}", Sha256::digest(prompt_systeme.as_bytes())) != empreinte {
+    if !crate::personnage::sceau_valide(&prompt_systeme, &empreinte) {
         return Ok(Interlocuteur::PromptAltere { personnage_id });
     }
 
     let conversation_id = ouvrir_le_fil(pool, utilisateur_id, personnage_id).await?;
 
-    Ok(Interlocuteur::Pret(Box::new(Compagnon {
-        personnage_id,
+    Ok(Interlocuteur::Pret(Compagnon {
         conversation_id,
-        nom,
         prompt_systeme,
-    })))
+    }))
 }
 
 /// Rend le fil de l'utilisateur, en le créant au besoin.

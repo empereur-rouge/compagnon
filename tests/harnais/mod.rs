@@ -287,10 +287,7 @@ pub const REPONSE_DU_DOUBLE: &str = "Coucou, je suis là.";
 
 /// Démarre le service contre un faux Telegram, et rend de quoi lui parler.
 pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
-    // Une base neuve par test : le service y appliquera lui-même ses migrations, exactement
-    // comme en production. Le test n'a donc pas à connaître le schéma.
-    let base = BaseDeTest::creer().await;
-    lancer_sur(faux, base, ModeleDouble::qui_repond(REPONSE_DU_DOUBLE)).await
+    demarrer_avec_modele(faux, ModeleDouble::qui_repond(REPONSE_DU_DOUBLE)).await
 }
 
 /// Démarre le service avec un double qui joue le scénario donné.
@@ -298,32 +295,25 @@ pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
 /// C'est par là qu'on éprouve ce que le service fait d'un modèle qui expire ou qui refuse —
 /// des situations qui, en production, n'arrivent qu'au pire moment et jamais en test.
 pub async fn demarrer_avec_modele(faux: &FauxTelegram, modele: ModeleDouble) -> EnMarche {
-    let base = BaseDeTest::creer().await;
-    lancer_sur(faux, base, modele).await
+    // Une base neuve par test : le service y appliquera lui-même ses migrations, exactement
+    // comme en production. Le test n'a donc pas à connaître le schéma.
+    reprendre_avec_modele(faux, BaseDeTest::creer().await, modele).await
 }
 
 /// Démarre un service sur une base **existante**, avec ce qu'elle contient déjà.
 ///
 /// Sert à éprouver ce qu'un redémarrage reprend : c'est la promesse centrale de la file en
 /// base, et elle ne se vérifie qu'en faisant repartir un second service sur les restes du
-/// premier.
-pub async fn reprendre(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
-    lancer_sur(faux, base, ModeleDouble::qui_repond(REPONSE_DU_DOUBLE)).await
-}
-
-/// Comme [`reprendre`], avec un double choisi.
+/// premier. Le second service doit souvent jouer le même scénario que le premier, sans quoi la
+/// réponse qui prouve la reprise n'est plus reconnaissable.
 ///
-/// Le second service d'un test de survie doit souvent jouer le même scénario que le premier :
-/// sans cela, la réponse qui prouve la reprise n'est plus reconnaissable.
+/// Les trois fonctions se chaînent — défaut de modèle, puis défaut de base — au lieu de former
+/// un produit cartésien dont la quatrième case s'écrit mécaniquement sans être demandée.
 pub async fn reprendre_avec_modele(
     faux: &FauxTelegram,
     base: BaseDeTest,
     modele: ModeleDouble,
 ) -> EnMarche {
-    lancer_sur(faux, base, modele).await
-}
-
-async fn lancer_sur(faux: &FauxTelegram, base: BaseDeTest, modele: ModeleDouble) -> EnMarche {
     let config = faux.config(&base.url);
     let modele = Arc::new(modele);
     let prepare: Prepare = app::preparer(&config, Arc::clone(&modele) as Arc<dyn ClientModele>)

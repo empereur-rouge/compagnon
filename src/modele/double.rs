@@ -39,32 +39,14 @@ pub enum Acte {
     /// Rendre le dernier message reçu, pour que chaque réponse soit distinguable.
     Repeter,
     /// Échouer de cette façon.
-    Echouer(ErreurModeleClonable),
-}
-
-/// Une [`ErreurModele`] qu'on peut écrire dans un scénario.
-///
-/// [`ErreurModele`] n'est pas `Clone` — elle n'a aucune raison de l'être en production. Plutôt
-/// que de l'affaiblir pour le confort des tests, le scénario porte cette description et la
-/// convertit à l'appel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErreurModeleClonable {
-    /// Voir [`ErreurModele::Injoignable`].
-    Injoignable(super::Panne),
-    /// Voir [`ErreurModele::Refuse`].
-    Refuse(u16),
-    /// Voir [`ErreurModele::Vide`].
-    Vide,
-}
-
-impl From<ErreurModeleClonable> for ErreurModele {
-    fn from(valeur: ErreurModeleClonable) -> Self {
-        match valeur {
-            ErreurModeleClonable::Injoignable(panne) => Self::Injoignable(panne),
-            ErreurModeleClonable::Refuse(code) => Self::Refuse { code },
-            ErreurModeleClonable::Vide => Self::Vide,
-        }
-    }
+    ///
+    /// Porte l'erreur de production, pas une copie : une énumération parallèle avait existé
+    /// ici, et elle avait déjà oublié [`ErreurModele::RefusApplicatif`] et
+    /// [`ErreurModele::Tronquee`] — les deux variantes ajoutées après mesure sur un vrai
+    /// serveur, dont la seule qui ne se rejoue pas. Le comportement du worker face à elle
+    /// n'était donc éprouvable par aucun test. Une liste tenue à la main est une garantie qui
+    /// s'éteint en silence ; le compilateur, lui, force la couverture.
+    Echouer(ErreurModele),
 }
 
 /// Ce que le double a observé.
@@ -100,7 +82,7 @@ impl ModeleDouble {
 
     /// Un double qui échoue toujours de la même façon.
     #[must_use]
-    pub fn qui_echoue(erreur: ErreurModeleClonable) -> Self {
+    pub fn qui_echoue(erreur: ErreurModele) -> Self {
         Self::qui_joue(vec![Acte::Echouer(erreur)])
     }
 
@@ -120,12 +102,6 @@ impl ModeleDouble {
     #[must_use]
     pub fn appels(&self) -> usize {
         self.memoire.lock().expect("verrou du double").recus.len()
-    }
-
-    /// Les contextes reçus, dans l'ordre d'appel.
-    #[must_use]
-    pub fn recus(&self) -> Vec<ContexteConversation> {
-        self.memoire.lock().expect("verrou du double").recus.clone()
     }
 
     /// Le dernier contexte reçu, s'il y en a eu un.
@@ -172,7 +148,7 @@ impl ClientModele for ModeleDouble {
                     tokio::time::sleep(attente).await;
                     (texte, attente)
                 }
-                Acte::Echouer(erreur) => return Err(erreur.into()),
+                Acte::Echouer(erreur) => return Err(erreur),
             };
 
             // Une approximation grossière du découpage en jetons : le test n'a besoin que
@@ -201,9 +177,8 @@ impl ClientModele for ModeleDouble {
     }
 }
 
-/// Un double dont chaque appel expire, quel que soit le scénario — raccourci du cas le plus
-/// fréquent en test de reprise.
+/// Un double dont chaque appel expire — le cas le plus fréquent en test de reprise.
 #[must_use]
 pub fn modele_qui_expire() -> ModeleDouble {
-    ModeleDouble::qui_echoue(ErreurModeleClonable::Injoignable(super::Panne::Delai))
+    ModeleDouble::qui_echoue(ErreurModele::Injoignable(super::Panne::Delai))
 }

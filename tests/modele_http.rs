@@ -123,13 +123,7 @@ async fn le_prompt_systeme_part_en_premier_et_le_message_ensuite() {
     // Le format de fil est ce que ni le compilateur ni le type ne gardent : une inversion
     // d'ordre ferait parler le compagnon avec son prompt en guise de message d'utilisateur, et
     // aucun test de type ne l'attraperait.
-    let serveur = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(reponse_nominale("ok", "stop")))
-        .mount(&serveur)
-        .await;
-    let client = ClientHttp::new(config(&serveur.uri())).expect("client");
+    let (serveur, client) = client_qui_recoit(200, reponse_nominale("ok", "stop")).await;
 
     client.repondre(&contexte()).await.expect("réponse");
 
@@ -307,4 +301,29 @@ async fn aucune_erreur_du_client_ne_laisse_fuir_la_cle() {
     println!("Debug du client : {rendu_client}");
     assert!(!rendu_client.contains(CLE), "la clé fuit dans le Debug du client");
     assert!(rendu_client.contains("masqué"));
+}
+
+#[tokio::test]
+async fn un_corps_non_conforme_ne_se_rejoue_pas() {
+    // Le pendant du `200` porteur d'erreur : ici le fournisseur rend du JSON valide dont la
+    // FORME ne correspond pas — `choices` est une chaîne au lieu d'un tableau. C'est ce que
+    // produit une `MODELE_API_BASE` qui désigne un autre service, cas au moins aussi fréquent
+    // qu'une URL inexistante, et qu'un `Injoignable` ferait rejouer trois fois en facturant.
+    //
+    // Un objet aux champs simplement absents ne suffirait pas : tous les champs de la réponse
+    // portent `serde(default)`, délibérément, pour qu'un fournisseur qui omet `usage` ne coûte
+    // pas un message. Il faut donc un conflit de type pour éprouver ce chemin.
+    let (_serveur, client) =
+        client_qui_recoit(200, json!({ "choices": "pas un tableau", "model": "x" })).await;
+
+    let erreur = client.repondre(&contexte()).await.expect_err("doit échouer");
+    println!("erreur : {erreur} — reprise : {}", erreur.merite_une_reprise());
+
+    assert!(
+        matches!(erreur, ErreurModele::ReponseIllisible),
+        "obtenu : {erreur:?}"
+    );
+    assert!(!erreur.merite_une_reprise(), "un serveur non conforme le restera");
+    // Le corps ne traverse pas : il reprend la requête, donc le prompt.
+    assert!(!erreur.to_string().contains("choices"));
 }

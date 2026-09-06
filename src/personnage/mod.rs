@@ -239,11 +239,36 @@ pub fn composer(traits: &Traits) -> Prompt {
     // 5. Règles fixes, en dernier
     t.push_str(&regles::bloc());
 
-    let empreinte = format!("{:x}", Sha256::digest(t.as_bytes()));
+    let empreinte = empreinte(&t);
     Prompt {
         texte: t,
         empreinte,
     }
+}
+
+/// L'empreinte d'un texte de prompt, dans la forme exacte que la base stocke.
+///
+/// # Pourquoi une fonction pour une ligne
+///
+/// Parce que cette ligne était écrite **trois fois** — à la composition, à la vérification
+/// d'intégrité, et sur le chemin d'un message — et que c'est la formule dont dépend le seul
+/// point de contrôle de la modération. Un changement d'algorithme appliqué à deux endroits sur
+/// trois fait lire tous les prompts comme altérés, ou laisse passer un texte non validé.
+///
+/// C'est aussi ce qu'il faudra changer le jour où le sceau deviendra un HMAC dont la clé vit
+/// hors de la base : un seul endroit, au lieu de trois à retrouver.
+#[must_use]
+pub fn empreinte(texte: &str) -> String {
+    format!("{:x}", Sha256::digest(texte.as_bytes()))
+}
+
+/// Vrai si le texte correspond à l'empreinte qui l'accompagne.
+///
+/// La comparaison est écrite ici plutôt que chez ses deux appelants, pour la même raison que
+/// [`empreinte`] : ils doivent rester d'accord sans avoir à se connaître.
+#[must_use]
+pub fn sceau_valide(texte: &str, empreinte_attendue: &str) -> bool {
+    empreinte(texte) == empreinte_attendue
 }
 
 /// Décrit une composition, en préférant la fusion quand le couple est répertorié.
@@ -650,7 +675,7 @@ pub async fn verifier_integrite(
         return Ok(Integrite::PasDePromptValide);
     };
 
-    if format!("{:x}", Sha256::digest(texte.as_bytes())) != empreinte {
+    if !sceau_valide(&texte, &empreinte) {
         return Ok(Integrite::TexteAltere);
     }
 

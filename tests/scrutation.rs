@@ -47,8 +47,7 @@ async fn un_message_scrute_ressort_par_la_meme_porte_qu_un_message_webhook() {
         .await;
 
     let base = harnais::base::BaseDeTest::creer().await;
-    base.verifier_age(42).await;
-    base.compagnon_actif(42, "Alix").await;
+    base.prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     let (arret, tache) = lancer(&faux, &base).await;
 
     // La réponse doit partir exactement comme si le message était entré par le webhook.
@@ -130,8 +129,7 @@ async fn l_offset_avance_pour_accuser_ce_qui_a_ete_pris() {
     .await;
 
     let base = harnais::base::BaseDeTest::creer().await;
-    base.verifier_age(42).await;
-    base.compagnon_actif(42, "Alix").await;
+    base.prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     let (arret, tache) = lancer(&faux, &base).await;
 
     // Les trois doivent ressortir, dans l'ordre.

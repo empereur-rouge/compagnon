@@ -22,84 +22,23 @@ mod harnais;
 
 use compagnon::db::Base;
 use compagnon::personnage::{self, Integrite};
+use harnais::UTILISATEUR;
 use harnais::base::BaseDeTest;
-use sqlx::PgPool;
 use uuid::Uuid;
 
-const COMPAGNON: Uuid = Uuid::from_u128(0x3333_3333_3333_3333_3333_3333_3333_3333);
 
 /// Un compagnon complet, validé, actif.
-async fn compagnon_actif() -> (BaseDeTest, Base) {
+///
+/// Passe par le harnais, donc par le chemin de production. La version manuscrite qu'elle
+/// remplace résolvait les codes de catalogue **sans le filtre `actif`** que
+/// `db::personnages::poser_apparence` applique : elle construisait des compagnons sur des
+/// lignes désactivées que la production refuse. C'est exactement le défaut que le module de
+/// production documente comme étant déjà survenu une fois — et il était revenu ici.
+async fn compagnon_actif() -> (BaseDeTest, Base, Uuid) {
     let jetable = BaseDeTest::creer().await;
-    let base = Base::ouvrir(&jetable.url).await.expect("base migrée");
-    let pool = base.pool();
-
-    sqlx::query("insert into utilisateurs (id) values (7)")
-        .execute(pool)
-        .await
-        .expect("utilisateur");
-    sqlx::query("insert into personnages (id, utilisateur_id, nom) values ($1, 7, 'Léa')")
-        .bind(COMPAGNON)
-        .execute(pool)
-        .await
-        .expect("compagnon");
-    sqlx::query(
-        "insert into personnage_apparence (personnage_id, genre_id, tranche_age_id, morphologie_id)
-         select $1,
-                (select id from ref_genres where code = 'femme'),
-                (select id from ref_tranches_age_apparent where code = '25_34'),
-                (select id from ref_morphologies where code = 'mince')",
-    )
-    .bind(COMPAGNON)
-    .execute(pool)
-    .await
-    .expect("apparence");
-    for (table, colonne, reference, code) in [
-        (
-            "personnage_archetypes",
-            "archetype_id",
-            "ref_archetypes",
-            "calme",
-        ),
-        ("personnage_tons", "ton_id", "ref_tons", "tendre"),
-    ] {
-        sqlx::query(&format!(
-            "insert into {table} (personnage_id, {colonne}, role)
-             select $1, id, 'principal' from {reference} where code = $2"
-        ))
-        .bind(COMPAGNON)
-        .bind(code)
-        .execute(pool)
-        .await
-        .expect("trait");
-    }
-    sqlx::query("insert into personnage_parametres_interaction (personnage_id) values ($1)")
-        .bind(COMPAGNON)
-        .execute(pool)
-        .await
-        .expect("interaction");
-
-    personnage::valider(pool, COMPAGNON, None, "modele-x")
-        .await
-        .expect("validation");
-    personnage::activer(pool, COMPAGNON)
-        .await
-        .expect("activation");
-    (jetable, base)
-}
-
-/// L'état courant : statut, et validité du prompt.
-async fn etat(pool: &PgPool) -> (String, bool) {
-    sqlx::query_as(
-        "select p.statut,
-                coalesce((select valide_le is not null from personnage_parametres_modele m
-                           where m.personnage_id = p.id), false)
-           from personnages p where p.id = $1",
-    )
-    .bind(COMPAGNON)
-    .fetch_one(pool)
-    .await
-    .expect("état")
+    let personnage_id = jetable.compagnon_actif(UTILISATEUR, "Lea").await;
+    let base = Base::ouvrir(&jetable.url).await.expect("base ouverte");
+    (jetable, base, personnage_id)
 }
 
 #[tokio::test]
@@ -165,8 +104,8 @@ async fn le_texte_du_catalogue_ne_se_modifie_pas_hors_migration() {
 
 #[tokio::test]
 async fn modifier_un_trait_apres_validation_revoque_l_activation() {
-    let (jetable, base) = compagnon_actif().await;
-    let (statut, valide) = etat(base.pool()).await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
+    let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("au départ                    : statut {statut}, prompt validé {valide}");
     assert_eq!((statut.as_str(), valide), ("actif", true));
 
@@ -174,15 +113,15 @@ async fn modifier_un_trait_apres_validation_revoque_l_activation() {
     // traits restaient librement modifiables, et le compagnon restait actif en portant un prompt
     // qui ne le décrivait plus.
     sqlx::query(
-        "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-         values ($1, 'humour', 0.90)",
+        "update personnage_parametres_gradues set valeur = 0.90
+          where personnage_id = $1 and parametre_code = 'humour'",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await
     .expect("modification de trait");
 
-    let (statut, valide) = etat(base.pool()).await;
+    let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("après modification d'un trait : statut {statut}, prompt validé {valide}");
     assert_eq!(
         (statut.as_str(), valide),
@@ -195,23 +134,23 @@ async fn modifier_un_trait_apres_validation_revoque_l_activation() {
 
 #[tokio::test]
 async fn renommer_apres_validation_revoque_aussi() {
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
 
     // C'était le second chemin par lequel du texte non modéré atteignait le prompt : le nom est
     // le seul texte libre, et le changer après validation le faisait entrer sans examen.
     sqlx::query("update personnages set nom = 'Ma petite fille' where id = $1")
-        .bind(COMPAGNON)
+        .bind(compagnon)
         .execute(base.pool())
         .await
         .expect("renommage");
 
-    let (statut, valide) = etat(base.pool()).await;
+    let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("après renommage : statut {statut}, prompt validé {valide}");
     assert_eq!((statut.as_str(), valide), ("brouillon", false));
 
     // Et le compagnon ne peut pas être réactivé sans repasser par la modération, qui refusera
     // désormais ce nom.
-    let verdict = personnage::valider(base.pool(), COMPAGNON, None, "modele-x")
+    let verdict = personnage::valider(base.pool(), compagnon, None, "modele-x")
         .await
         .expect("revalidation");
     println!("revalidation    : {verdict:?}");
@@ -225,19 +164,19 @@ async fn renommer_apres_validation_revoque_aussi() {
 
 #[tokio::test]
 async fn retirer_la_validation_rabat_un_compagnon_actif() {
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
 
     // L'invariant « actif ⇒ prompt validé » était gardé sur une table et pas sur l'autre : rien
     // n'interdisait de retirer la validation en laissant le compagnon actif.
     sqlx::query(
         "update personnage_parametres_modele set valide_le = null where personnage_id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await
     .expect("retrait de validation");
 
-    let (statut, valide) = etat(base.pool()).await;
+    let (statut, valide) = jetable.etat_du_compagnon(UTILISATEUR).await;
     println!("validation retirée : statut {statut}, prompt validé {valide}");
     assert_eq!((statut.as_str(), valide), ("brouillon", false));
 
@@ -246,9 +185,9 @@ async fn retirer_la_validation_rabat_un_compagnon_actif() {
 
 #[tokio::test]
 async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
 
-    let intacte = personnage::verifier_integrite(base.pool(), COMPAGNON, None)
+    let intacte = personnage::verifier_integrite(base.pool(), compagnon, None)
         .await
         .expect("vérification");
     println!("juste après validation      : {intacte:?}");
@@ -262,14 +201,14 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     // peu ». À l'intérieur d'un même palier, le prompt ne bougerait pas, et l'intégrité
     // resterait intacte : c'est la stabilité voulue, pas un défaut de détection.
     sqlx::query(
-        "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
-         values ($1, 'humour', 0.90)",
+        "update personnage_parametres_gradues set valeur = 0.90
+          where personnage_id = $1 and parametre_code = 'humour'",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await
     .expect("curseur");
-    personnage::valider(base.pool(), COMPAGNON, None, "modele-x")
+    personnage::valider(base.pool(), compagnon, None, "modele-x")
         .await
         .expect("revalidation");
 
@@ -287,7 +226,7 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     .await
     .expect("plafond");
 
-    let derive = personnage::verifier_integrite(base.pool(), COMPAGNON, Some("XX"))
+    let derive = personnage::verifier_integrite(base.pool(), compagnon, Some("XX"))
         .await
         .expect("vérification");
     println!("après un plafond posé sur XX : {derive:?}");
@@ -302,7 +241,7 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
         "update personnage_parametres_modele set prompt_systeme_genere = 'texte remplacé'
           where personnage_id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await
     .expect("altération");
@@ -310,12 +249,12 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
     sqlx::query(
         "update personnage_parametres_modele set valide_le = now() where personnage_id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await
     .expect("revalidation directe");
 
-    let altere = personnage::verifier_integrite(base.pool(), COMPAGNON, None)
+    let altere = personnage::verifier_integrite(base.pool(), compagnon, None)
         .await
         .expect("vérification");
     println!("après altération du texte    : {altere:?}");
@@ -326,7 +265,7 @@ async fn l_integrite_detecte_une_derive_que_rien_d_autre_ne_verrait() {
 
 #[tokio::test]
 async fn un_curseur_de_l_utilisateur_ne_se_pose_pas_sur_un_compagnon() {
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
 
     // `intensite_suggestive` est porté par l'utilisateur : c'est un choix de l'humain sur ce
     // qu'il veut recevoir, pas un trait du compagnon. En écrire une copie créait deux sources de
@@ -335,7 +274,7 @@ async fn un_curseur_de_l_utilisateur_ne_se_pose_pas_sur_un_compagnon() {
         "insert into personnage_parametres_gradues (personnage_id, parametre_code, valeur)
          values ($1, 'intensite_suggestive', 0.80)",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(base.pool())
     .await;
     println!(
@@ -442,7 +381,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
     // Mesuré avant correctif : une console réécrivant `prompt_systeme_genere` et recalculant
     // l'empreinte laissait le compagnon `actif`, `valide_le` intact, empreinte cohérente. Le
     // worker appelait donc le modèle avec un texte qui n'avait franchi aucun contrôle.
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
     let pool = base.pool();
 
     let avant: (String, bool) = sqlx::query_as(
@@ -450,7 +389,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
            from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
           where p.id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .fetch_one(pool)
     .await
     .expect("état initial");
@@ -465,7 +404,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
                 prompt_systeme_hash = encode(sha256('Tu es Alix, lyceenne de 15 ans.'::bytea), 'hex')
           where personnage_id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .execute(pool)
     .await
     .expect("la réécriture elle-même n'est pas interdite")
@@ -477,7 +416,7 @@ async fn reecrire_le_prompt_valide_revoque_la_validation() {
            from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
           where p.id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .fetch_one(pool)
     .await
     .expect("état final");
@@ -502,9 +441,9 @@ async fn revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider() {
     // `valide_le` dans la même instruction. C'est ce qui permet de distinguer les deux sans
     // nommer le code appelant — et si ce test échouait, plus aucun compagnon ne pourrait être
     // validé.
-    let (jetable, base) = compagnon_actif().await;
+    let (jetable, base, compagnon) = compagnon_actif().await;
 
-    let verdict = compagnon::personnage::valider(base.pool(), COMPAGNON, Some("FR"), "modele-x")
+    let verdict = compagnon::personnage::valider(base.pool(), compagnon, Some("FR"), "modele-x")
         .await
         .expect("revalidation");
     println!("verdict : {verdict:?}");
@@ -514,7 +453,7 @@ async fn revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider() {
            from personnages p join personnage_parametres_modele m on m.personnage_id = p.id
           where p.id = $1",
     )
-    .bind(COMPAGNON)
+    .bind(compagnon)
     .fetch_one(base.pool())
     .await
     .expect("état");

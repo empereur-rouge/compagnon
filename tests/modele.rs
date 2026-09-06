@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use compagnon::modele::double::{Acte, ErreurModeleClonable, ModeleDouble, modele_qui_expire};
+use compagnon::modele::double::{Acte, ModeleDouble, modele_qui_expire};
 use compagnon::modele::{ClientModele, ContexteConversation, ErreurModele, Panne, Role, Tour};
 
 /// Un contexte minimal, avec un prompt système reconnaissable.
@@ -23,8 +23,8 @@ fn contexte(prompt: &str, message: &str) -> ContexteConversation {
 async fn le_double_joue_son_scenario_puis_repete_le_dernier_acte() {
     // C'est le scénario dont la reprise bornée a besoin : échouer, échouer, puis aboutir.
     let modele = ModeleDouble::qui_joue(vec![
-        Acte::Echouer(ErreurModeleClonable::Injoignable(Panne::Delai)),
-        Acte::Echouer(ErreurModeleClonable::Refuse(429)),
+        Acte::Echouer(ErreurModele::Injoignable(Panne::Delai)),
+        Acte::Echouer(ErreurModele::Refuse { code: 429 }),
         Acte::Repondre("Bonjour, je suis là.".to_owned()),
     ]);
     let ctx = contexte("Tu es Alix.", "Tu es là ?");

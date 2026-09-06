@@ -157,9 +157,11 @@ dérivation *est* le rendu masqué, ce que `tests/secrets.rs` constate en l'impr
 rend `<masqué, N caractères>`.
 
 Lire la valeur exige `exposer()`, nommé pour être désagréable : `rg 'exposer\('` donne la liste
-exhaustive des points de sortie, ce qu'aucune `String` ne permet. Portent un `Secret` :
-`Config::jeton_bot`, `Config::secret_webhook`, `Config::url_base`, `Canal::racine`,
-`Canal::secret`.
+exhaustive des points de sortie, ce qu'aucune `String` ne permet.
+
+La liste des champs qui en portent un n'est **pas** écrite ici : une liste manuscrite se périme,
+et celle qui figurait à cet endroit avait déjà oublié `ConfigModele::cle`, ajouté dans le même
+commit. `rg 'Secret,$'` la donne à jour.
 
 **Le proxy journalise les en-têtes.** Caddy ne caviarde d'office que `Cookie`, `Set-Cookie`,
 `Authorization` et `Proxy-Authorization`. `X-Telegram-Bot-Api-Secret-Token` n'en fait pas

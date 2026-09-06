@@ -5,18 +5,10 @@
 //! la production. Ne restent ici que la journalisation, la lecture des arguments et le code de
 //! sortie — ce qui appartient à un binaire.
 //!
-//! ```text
-//! compagnon                          sert le webhook et fait tourner le worker
-//! compagnon ecouter                  reçoit par scrutation, sans domaine ni TLS
-//! compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
-//! compagnon catalogues               ce parmi quoi un compagnon peut être composé
-//! compagnon modele essai <texte>     appelle le fournisseur pour de vrai, et en donne le coût
-//! compagnon compagnon creer …        crée un compagnon à partir de choix
-//! compagnon compagnon montrer <id>   affiche le prompt composé
-//! compagnon utilisateur age <id>     enregistre une vérification d'âge
-//! compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
-//! compagnon webhook retirer          retire le webhook
-//! ```
+//! Les commandes sont listées dans [`USAGE`], et à un seul endroit : les deux listes qui
+//! coexistaient ici avaient **déjà divergé** — l'une ignorait `compagnon activer` et
+//! `compagnon verifier`, l'autre `catalogues`, `compagnon creer/montrer` et `utilisateur age`.
+//! Une liste qui se maintient à deux endroits n'est à jour nulle part.
 
 use std::sync::Arc;
 
@@ -39,8 +31,17 @@ compagnon — plateforme de personnages conversationnels sur Telegram
   compagnon ecouter                  reçoit par scrutation — ni domaine, ni TLS, ni tunnel ;
                                      pour éprouver le bot depuis un poste de travail
   compagnon sonde                    interroge /health, sort en 0 ou 1
+
+  compagnon catalogues               ce parmi quoi un compagnon peut être composé
+  compagnon compagnon creer …        crée un compagnon à partir de choix de catalogue
+  compagnon compagnon montrer <id>   affiche le prompt composé et son empreinte
+  compagnon compagnon verifier <id>  passe le compagnon par la modération
+  compagnon compagnon activer <id>   active un compagnon validé
+  compagnon utilisateur age <id>     enregistre une vérification d'âge
+
   compagnon modele essai <texte>     appelle le fournisseur configuré pour de vrai : réponse,
                                      jetons, durée mesurée et coût au tarif en vigueur
+
   compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
   compagnon webhook retirer          retire le webhook
 

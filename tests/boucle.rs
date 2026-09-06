@@ -19,10 +19,9 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_du_modele() {
     println!("service à l'écoute sur {}", service.adresse);
     // Deux conditions, chacune éprouvée par son propre test : l'âge vérifié, et un compagnon
     // actif dont le prompt a passé la modération.
-    service.base().verifier_age(harnais::UTILISATEUR).await;
     let compagnon = service
         .base()
-        .compagnon_actif(harnais::UTILISATEUR, "Alix")
+        .prete_a_converser(harnais::UTILISATEUR, "Alix")
         .await;
     println!("compagnon actif : {compagnon}");
 
@@ -202,8 +201,7 @@ async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     let longue_reponse: String = motif.chars().cycle().take(6000).collect();
     let service =
         harnais::demarrer_avec_modele(&faux, ModeleDouble::qui_repond(&longue_reponse)).await;
-    service.base().verifier_age(harnais::UTILISATEUR).await;
-    service.base().compagnon_actif(harnais::UTILISATEUR, "Alix").await;
+    service.base().prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     println!(
         "réponse du modèle : {} unités UTF-16 (plafond sortant : 4096)",
         harnais::longueur_utf16(&longue_reponse)
@@ -460,8 +458,7 @@ async fn sans_verification_d_age_le_moteur_reste_ferme() {
     assert_eq!(service.modele().appels(), 0, "aucun jeton ne doit être payé pour un refus");
 
     // Puis la barrière se lève, et le même utilisateur obtient une vraie réponse.
-    service.base().verifier_age(harnais::UTILISATEUR).await;
-    service.base().compagnon_actif(harnais::UTILISATEUR, "Alix").await;
+    service.base().prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     service
         .poster(&update_privee(960_002, "et maintenant ?"))
         .await;

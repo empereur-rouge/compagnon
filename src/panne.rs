@@ -37,7 +37,11 @@ pub enum Panne {
     Delai,
     /// La connexion n'a pas pu être établie : DNS, refus, TLS.
     Connexion,
-    /// La réponse est arrivée mais n'a pas pu être lue.
+    /// La réponse a commencé d'arriver et son corps s'est interrompu.
+    ///
+    /// À distinguer d'un corps **lisible mais non conforme** : celui-là n'est pas une panne de
+    /// transport, et il ne se rejoue pas de la même façon. Voir
+    /// [`crate::modele::ErreurModele::ReponseIllisible`].
     Corps,
     /// La requête elle-même n'a pas pu être formée ou émise.
     Requete,
@@ -71,26 +75,63 @@ impl Panne {
         match self {
             Self::Delai => "délai dépassé",
             Self::Connexion => "connexion impossible",
-            Self::Corps => "réponse illisible",
+            Self::Corps => "réponse interrompue",
             Self::Requete => "requête non émise",
             Self::Autre => "cause indéterminée",
         }
     }
 
-    /// Vrai si la même requête, rejouée plus tard, a une chance d'aboutir.
-    ///
-    /// Toutes les pannes de transport le méritent : aucune n'a atteint l'état distant. C'est
-    /// une méthode et non une constante parce que l'appelant raisonne sur des pannes sans
-    /// avoir à savoir qu'elles sont toutes équivalentes de ce point de vue — et parce que
-    /// [`Panne::Requete`] cessera de l'être le jour où elle couvrira une requête malformée.
-    #[must_use]
-    pub const fn merite_une_reprise(self) -> bool {
-        true
-    }
+}
+
+/// Vrai si un code de réponse HTTP mérite qu'on rejoue la même requête.
+///
+/// # Pourquoi ici, et pas dans chaque appelant
+///
+/// Cette table était écrite deux fois — une pour Telegram, une pour le modèle — et c'est la
+/// partie qui **change** : un fournisseur ajoute un `529`, un autre veut `408`. Le module
+/// [`crate::panne`] a été créé pour la classification du transport en disant que « le problème
+/// n'est ni telegram ni modèle : c'est celui de tout appel sortant ». La décision de reprise
+/// sur un code de réponse est la même propriété transversale ; elle s'était arrêtée à mi-chemin.
+///
+/// `429` : débit dépassé, il faut attendre. `5xx` : défaillance côté serveur.
+/// Le reste — `400` requête mal formée, `401`/`403` identifiants refusés, `404` route
+/// inexistante — refera exactement la même erreur, et rejouer ne fait qu'épuiser les tentatives
+/// en retardant le moment où quelqu'un apprend que ça ne marche pas.
+#[must_use]
+pub const fn reprise_pour_statut(code: u16) -> bool {
+    matches!(code, 429 | 500..=599)
 }
 
 impl std::fmt::Display for Panne {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.libelle())
     }
+}
+
+/// Construit un client HTTP sortant, ou rend la nature de l'échec.
+///
+/// # Pourquoi un constructeur partagé
+///
+/// Trois endroits bâtissaient un `reqwest::Client`, avec trois traitements de l'échec : le
+/// modèle classait en [`Panne`], le canal Telegram gardait la `reqwest::Error`, et la sonde
+/// `/health` **empruntait la variante d'erreur du canal Telegram** pour rapporter l'échec de
+/// son propre client. Un exploitant lisant « client HTTP du canal Telegram inconstructible »
+/// pendant un incident de sonde locale cherchait au mauvais endroit.
+///
+/// Le module affirme, quinze lignes plus haut, que le correctif « a été de retirer au type
+/// d'erreur la **capacité** de porter une URL ». Deux types la conservaient. Une discipline
+/// perd sa force dès qu'elle admet des exceptions.
+///
+/// # Errors
+///
+/// [`Panne`] si la pile HTTP ne peut pas être bâtie — en pratique, une pile TLS indisponible.
+pub fn client_http(
+    delai: std::time::Duration,
+    connexion: Option<std::time::Duration>,
+) -> Result<reqwest::Client, Panne> {
+    let mut constructeur = reqwest::Client::builder().timeout(delai);
+    if let Some(connexion) = connexion {
+        constructeur = constructeur.connect_timeout(connexion);
+    }
+    constructeur.build().map_err(|erreur| Panne::classer(&erreur))
 }

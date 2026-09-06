@@ -25,8 +25,7 @@ async fn une_tache_non_traitee_survit_a_l_arret_du_service() {
     // Le double répète ce qu'il reçoit : c'est ce qui rend la reprise reconnaissable après le
     // redémarrage — la réponse porte alors le message d'origine.
     let service = harnais::demarrer_avec_modele(&faux, ModeleDouble::qui_repete()).await;
-    service.base().verifier_age(UTILISATEUR).await;
-    service.base().compagnon_actif(UTILISATEUR, "Alix").await;
+    service.base().prete_a_converser(UTILISATEUR, "Alix").await;
 
     let reponse = service
         .poster(&update_privee(920_001, "message qui doit survivre"))
@@ -96,8 +95,7 @@ async fn l_ordre_est_tenu_dans_une_conversation_malgre_les_workers_concurrents()
     // Un double qui répète ce qu'il reçoit : avec une réponse constante, rien ne permettrait
     // d'observer que le troisième message a bien été traité après le deuxième.
     let service = harnais::demarrer_avec_modele(&faux, ModeleDouble::qui_repete()).await;
-    service.base().verifier_age(UTILISATEUR).await;
-    service.base().compagnon_actif(UTILISATEUR, "Alix").await;
+    service.base().prete_a_converser(UTILISATEUR, "Alix").await;
 
     // Le point éprouvé : quatre consommateurs tournent en parallèle, et pourtant les messages
     // d'une même personne ressortent dans l'ordre. Ce n'est pas le worker qui l'assure — il

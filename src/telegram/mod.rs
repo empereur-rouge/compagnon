@@ -50,8 +50,12 @@ const MARGE_SCRUTATION: Duration = Duration::from_secs(10);
 #[derive(Debug, thiserror::Error)]
 pub enum ErreurCanal {
     /// Le client HTTP n'a pas pu être construit.
+    ///
+    /// Porte une [`Panne`] et non la `reqwest::Error` : celle-ci transporte l'URL de l'appel,
+    /// et la racine de ce canal contient le jeton du bot. C'est le chemin exact d'une fuite
+    /// déjà survenue ici.
     #[error("client HTTP inconstructible : {0}")]
-    Client(#[from] reqwest::Error),
+    Client(Panne),
 }
 
 /// Le canal Telegram d'une instance.
@@ -87,10 +91,8 @@ impl Canal {
     /// Renvoie [`ErreurCanal::Client`] si le client HTTP ne peut être construit — en pratique,
     /// une pile TLS indisponible.
     pub fn new(config: &Config) -> Result<Self, ErreurCanal> {
-        let client = reqwest::Client::builder()
-            .timeout(DELAI_APPEL)
-            .connect_timeout(DELAI_CONNEXION)
-            .build()?;
+        let client = crate::panne::client_http(DELAI_APPEL, Some(DELAI_CONNEXION))
+            .map_err(ErreurCanal::Client)?;
 
         Ok(Self {
             client,

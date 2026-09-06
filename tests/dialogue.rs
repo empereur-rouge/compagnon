@@ -21,15 +21,14 @@
 
 mod harnais;
 
-use compagnon::modele::double::{ErreurModeleClonable, ModeleDouble};
-use compagnon::panne::Panne;
+use compagnon::modele::ErreurModele;
+use compagnon::modele::double::{ModeleDouble, modele_qui_expire};
 use harnais::{FauxTelegram, UTILISATEUR, update_privee};
 
 /// Un service prêt à converser : âge vérifié, compagnon actif.
 async fn service_pret(faux: &FauxTelegram, modele: ModeleDouble) -> harnais::EnMarche {
     let service = harnais::demarrer_avec_modele(faux, modele).await;
-    service.base().verifier_age(UTILISATEUR).await;
-    service.base().compagnon_actif(UTILISATEUR, "Alix").await;
+    service.base().prete_a_converser(UTILISATEUR, "Alix").await;
     service
 }
 
@@ -37,11 +36,7 @@ async fn service_pret(faux: &FauxTelegram, modele: ModeleDouble) -> harnais::EnM
 async fn un_modele_qui_expire_est_rejoue_puis_la_personne_est_prevenue() {
     let faux = FauxTelegram::demarrer().await;
     // Expire à chaque appel : le scénario du double répète son dernier acte indéfiniment.
-    let service = service_pret(
-        &faux,
-        ModeleDouble::qui_echoue(ErreurModeleClonable::Injoignable(Panne::Delai)),
-    )
-    .await;
+    let service = service_pret(&faux, modele_qui_expire()).await;
 
     service.poster(&update_privee(910_001, "tu es là ?")).await;
 
@@ -78,7 +73,7 @@ async fn une_cle_invalide_ne_consomme_pas_les_reprises() {
     let faux = FauxTelegram::demarrer().await;
     // `401` : la clé est refusée. Rejouer referait exactement la même erreur, trois fois, en
     // retardant d'autant le moment où la personne apprend que ça ne marche pas.
-    let service = service_pret(&faux, ModeleDouble::qui_echoue(ErreurModeleClonable::Refuse(401))).await;
+    let service = service_pret(&faux, ModeleDouble::qui_echoue(ErreurModele::Refuse { code: 401 })).await;
 
     service.poster(&update_privee(910_002, "coucou")).await;
     let messages = faux.attendre("sendMessage", 1).await;

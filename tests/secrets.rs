@@ -24,7 +24,17 @@ use compagnon::telegram::Canal;
 use harnais::{FauxTelegram, SECRET, update_privee};
 
 /// La partie du jeton qui ne doit jamais apparaître nulle part.
-const PARTIE_SECRETE: &str = "AAExempleDeJetonQuiNeSertAAbsolumen";
+///
+/// **Dérivée** du jeton de `fixtures`, jamais recopiée. Une copie littérale a existé ici : le
+/// jour où `JETON` aurait changé, les quatre `assert!(!rendu.contains(…))` seraient devenus
+/// vides de sens **en continuant de passer** — un test de non-fuite qui ne teste plus rien.
+/// `src/config.rs` avait déjà tiré la leçon et dérivait, lui.
+fn partie_secrete() -> &'static str {
+    compagnon::fixtures::JETON
+        .split_once(':')
+        .expect("le jeton d'exemple a la forme <id>:<secret>")
+        .1
+}
 
 #[tokio::test]
 async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
@@ -45,7 +55,7 @@ async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
 
     for (nom, rendu) in [("Display", &display), ("Debug", &debug)] {
         assert!(
-            !rendu.contains(PARTIE_SECRETE),
+            !rendu.contains(partie_secrete()),
             "le jeton fuit dans le {nom} de l'erreur"
         );
         assert!(
@@ -71,7 +81,7 @@ async fn la_chaine_de_diagnostic_d_une_erreur_api_ne_traverse_pas_vers_une_url()
     println!("diagnostic complet : {diagnostic}");
 
     assert!(
-        !diagnostic.contains(PARTIE_SECRETE),
+        !diagnostic.contains(partie_secrete()),
         "le jeton fuit par la chaîne de causes"
     );
     assert!(
@@ -201,7 +211,7 @@ fn le_debug_du_canal_masque_le_jeton_qu_il_porte() {
     let rendu = format!("{canal:?}");
     println!("Debug de Canal :\n  {rendu}");
 
-    assert!(!rendu.contains(PARTIE_SECRETE), "le jeton fuit dans le Debug du canal");
+    assert!(!rendu.contains(partie_secrete()), "le jeton fuit dans le Debug du canal");
     assert!(!rendu.contains(SECRET), "le secret du webhook fuit dans le Debug du canal");
     // La racine entière est masquée, pas seulement sa partie secrète : c'est l'URL complète
     // qui a fui la première fois, et « api.telegram.org/bot123456789 » identifie déjà le bot.

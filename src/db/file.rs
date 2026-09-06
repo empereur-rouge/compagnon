@@ -161,6 +161,13 @@ pub async fn terminer(pool: &PgPool, id: Uuid) -> Result<(), ErreurBase> {
     Ok(())
 }
 
+/// Nombre de prises au-delà duquel une tâche est abandonnée.
+///
+/// Vit ici et non chez le worker : c'est une politique de la file. Elle était portée par un
+/// argument que chaque appelant choisissait, ce qui laissait un futur appelant écrire `7` et
+/// changer la politique pour une classe de tâches sans que rien ne le signale.
+pub const TENTATIVES_MAX: i16 = 3;
+
 /// Rend une tâche après un échec : remise en attente, ou abandon si les reprises sont épuisées.
 ///
 /// Le code d'erreur est un **entier stable**, pas un message. C'est délibéré et c'est la leçon
@@ -170,7 +177,29 @@ pub async fn terminer(pool: &PgPool, id: Uuid) -> Result<(), ErreurBase> {
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si l'écriture échoue.
-pub async fn echouer(
+pub async fn echouer(pool: &PgPool, id: Uuid, code: i32) -> Result<(), ErreurBase> {
+    rendre(pool, id, code, TENTATIVES_MAX).await
+}
+
+/// Abandonne une tâche définitivement, sans lui laisser de reprise.
+///
+/// Pour les échecs dont on sait qu'ils se reproduiront à l'identique : une clé refusée, un
+/// prompt qui n'a franchi aucun contrôle. Les rejouer épuise les tentatives en retardant le
+/// moment où la personne apprend que ça ne marche pas.
+///
+/// Existe comme fonction plutôt que comme argument : la borne de reprise est une politique de
+/// la file, pas un nombre que ses appelants choisissent. Passer `0` exprimait la bonne idée
+/// dans le mauvais vocabulaire, et rien n'empêchait un futur appelant d'écrire `7`.
+///
+/// # Errors
+///
+/// [`ErreurBase::Requete`] si l'écriture échoue.
+pub async fn abandonner(pool: &PgPool, id: Uuid, code: i32) -> Result<(), ErreurBase> {
+    rendre(pool, id, code, 0).await
+}
+
+/// Le geste commun : rendre la tâche, en attente ou en échec selon la borne.
+async fn rendre(
     pool: &PgPool,
     id: Uuid,
     code: i32,

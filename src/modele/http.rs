@@ -6,7 +6,7 @@
 //! c'est la seule forme que **vLLM, TGI, et la quasi-totalité des hébergeurs de GPU exposent
 //! déjà**. C'est ce qui rend le remplacement du backend réel : passer d'un serverless facturé
 //! au jeton à un GPU dédié qu'on opère soi-même ne change qu'une URL et un tarif. Sans elle, le
-//! trait [`ClientModele`](super::ClientModele) ne serait qu'une indirection.
+//! trait [`ClientModele`] ne serait qu'une indirection.
 //!
 //! # Ce qui n'est pas ici, et pourquoi
 //!
@@ -80,6 +80,13 @@ const PAR_MILLION: Decimal = Decimal::from_parts(1_000_000, 0, 0, false, 0);
 /// mal orthographié découvert au premier message produit un registre de coûts faux, et un
 /// registre de coûts faux est pire qu'absent — il répond à la question du prix, avec un chiffre
 /// inventé.
+///
+/// `Debug` est **dérivé** : `cle` est un [`Secret`], donc le rendu la masque. Une implémentation
+/// manuscrite listait les neuf champs et reproduisait exactement le dérivé — sauf qu'un dixième
+/// champ ajouté en aurait été silencieusement absent, donc absent du journal de démarrage et de
+/// la sortie de `compagnon modele essai`, l'outil dont toute la raison d'être est de montrer la
+/// configuration réelle.
+#[derive(Debug)]
 pub struct ConfigModele {
     /// Racine de l'API, sans barre oblique finale — par exemple `https://api.exemple.com/v1`.
     pub base: String,
@@ -99,22 +106,6 @@ pub struct ConfigModele {
     pub prix_entree_eur_par_million: Decimal,
     /// Prix, en euros, d'un million de jetons de sortie.
     pub prix_sortie_eur_par_million: Decimal,
-}
-
-impl std::fmt::Debug for ConfigModele {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConfigModele")
-            .field("base", &self.base)
-            .field("cle", &self.cle)
-            .field("modele", &self.modele)
-            .field("fournisseur", &self.fournisseur)
-            .field("jetons_max", &self.jetons_max)
-            .field("temperature", &self.temperature)
-            .field("delai", &self.delai)
-            .field("prix_entree_eur_par_million", &self.prix_entree_eur_par_million)
-            .field("prix_sortie_eur_par_million", &self.prix_sortie_eur_par_million)
-            .finish()
-    }
 }
 
 impl ConfigModele {
@@ -312,12 +303,10 @@ impl ClientHttp {
     ///
     /// [`ErreurConstruction::Client`] si la pile HTTP ne peut pas être bâtie.
     pub fn new(config: ConfigModele) -> Result<Self, ErreurConstruction> {
-        let client = reqwest::Client::builder()
-            // Le délai porte sur l'appel entier, pas seulement sur la connexion : c'est la
-            // génération qui est lente, et c'est elle qu'il faut pouvoir abandonner.
-            .timeout(config.delai)
-            .build()
-            .map_err(|erreur| ErreurConstruction::Client(Panne::classer(&erreur)))?;
+        // Le délai porte sur l'appel entier, pas seulement sur la connexion : c'est la
+        // génération qui est lente, et c'est elle qu'il faut pouvoir abandonner.
+        let client = crate::panne::client_http(config.delai, None)
+            .map_err(ErreurConstruction::Client)?;
 
         let url = format!("{}/chat/completions", config.base);
         Ok(Self { client, config, url })
@@ -368,10 +357,18 @@ impl ClientHttp {
             });
         }
 
-        let charge: ReponseApi = reponse
-            .json()
-            .await
-            .map_err(|erreur| ErreurModele::Injoignable(Panne::classer(&erreur)))?;
+        let charge: ReponseApi = reponse.json().await.map_err(|erreur| {
+            // Deux échecs très différents sous une même API. `is_decode()` : le corps est
+            // arrivé entier et ne ressemble pas à ce que la convention prévoit — une racine
+            // d'API fausse, un fournisseur qui ne suit pas la convention. Rejouer refera
+            // exactement la même chose, en facturant à chaque fois. Tout le reste est une
+            // interruption de transport, qui se rejoue.
+            if erreur.is_decode() {
+                ErreurModele::ReponseIllisible
+            } else {
+                ErreurModele::Injoignable(Panne::classer(&erreur))
+            }
+        })?;
         let duree = debut.elapsed();
 
         if charge.error.is_some() {

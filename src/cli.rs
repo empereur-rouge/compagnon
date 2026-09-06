@@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::panne::Panne;
 use crate::telegram::Canal;
 
 /// Délai au-delà duquel la sonde considère le service comme muet.
@@ -34,13 +35,24 @@ pub enum ErreurCli {
     Telegram(#[from] crate::telegram::envoi::ErreurEnvoi),
 
     /// Le service local n'a pas répondu à la sonde.
-    #[error("le service ne répond pas sur {adresse} : {source}")]
+    ///
+    /// Porte une [`Panne`] classée, pas la `reqwest::Error` : même discipline que partout
+    /// ailleurs. L'adresse est reprise explicitement — elle est locale et sert au diagnostic,
+    /// contrairement à l'URL que l'erreur de transport aurait transportée.
+    #[error("le service ne répond pas sur {adresse} : {panne}")]
     Injoignable {
         /// L'adresse interrogée.
         adresse: String,
-        /// La cause.
-        source: reqwest::Error,
+        /// La nature de l'échec.
+        panne: Panne,
     },
+
+    /// Le client HTTP de la sonde n'a pas pu être construit.
+    ///
+    /// Distincte de celle du canal Telegram, dont elle empruntait la variante : deux clients
+    /// différents, deux causes différentes, et un exploitant qui doit savoir laquelle.
+    #[error("client HTTP de la sonde inconstructible : {0}")]
+    ClientSonde(Panne),
 
     /// Le service a répondu autre chose que `200`.
     #[error("le service répond {statut} sur /health")]
@@ -62,18 +74,15 @@ pub async fn sonde(config: &Config) -> Result<(), ErreurCli> {
     let adresse = adresse_locale(config.adresse_ecoute);
     let url = format!("http://{adresse}/health");
 
-    let client = reqwest::Client::builder()
-        .timeout(DELAI_SONDE)
-        .build()
-        .map_err(crate::telegram::ErreurCanal::Client)?;
+    let client = crate::panne::client_http(DELAI_SONDE, None).map_err(ErreurCli::ClientSonde)?;
 
     let reponse = client
         .get(&url)
         .send()
         .await
-        .map_err(|source| ErreurCli::Injoignable {
+        .map_err(|erreur| ErreurCli::Injoignable {
             adresse: adresse.to_string(),
-            source,
+            panne: Panne::classer(&erreur),
         })?;
 
     let statut = reponse.status();

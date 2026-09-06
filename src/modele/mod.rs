@@ -110,7 +110,12 @@ pub struct ReponseModele {
 pub use crate::panne::Panne;
 
 /// Ce qui a empêché le modèle de répondre.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Clone` est dérivé pour que les scénarios de test portent **cette** énumération plutôt qu'une
+/// copie parallèle. Une copie manuscrite avait existé le temps d'un commit, et elle avait déjà
+/// oublié deux variantes — précisément les deux ajoutées après mesure sur un vrai serveur, dont
+/// la seule non rejouable. Toutes les données portées sont `Copy` : la dérivation ne coûte rien.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ErreurModele {
     /// Le fournisseur n'a pas répondu.
     #[error("modèle injoignable : {0}")]
@@ -125,6 +130,19 @@ pub enum ErreurModele {
         /// Le code de statut renvoyé.
         code: u16,
     },
+
+    /// La réponse est arrivée entière et ne ressemble pas à ce que la convention prévoit.
+    ///
+    /// Distincte de [`ErreurModele::Injoignable`] avec [`Panne::Corps`], qui est un corps
+    /// **interrompu** : celui-là se rejoue, celui-ci non. Un serveur qui rend du JSON non
+    /// conforme en rendra encore au coup suivant — c'est une racine d'API fausse ou un
+    /// fournisseur qui ne suit pas la convention, pas un incident.
+    ///
+    /// La distinction n'est pas théorique : sans elle, une `MODELE_API_BASE` erronée et un
+    /// incident réseau reçoivent le même verdict, et le premier consomme trois générations
+    /// facturées avant d'être abandonné.
+    #[error("le fournisseur a rendu une réponse non conforme")]
+    ReponseIllisible,
 
     /// Le fournisseur a répondu `200`, et a annoncé une erreur dans le corps.
     ///
@@ -173,23 +191,19 @@ impl ErreurModele {
     #[must_use]
     pub const fn merite_une_reprise(&self) -> bool {
         match self {
-            Self::Injoignable(panne) => panne.merite_une_reprise(),
+            // Aucun échange n'a abouti : l'état distant est inchangé, et la cause est
+            // passagère par nature — DNS, connexion refusée, délai, corps interrompu.
+            Self::Injoignable(_) => true,
             // Le fournisseur a répondu, mais sans texte exploitable. Rejouable : mesuré, un
             // appel sur cinq aboutit là où les quatre autres ont épuisé leur budget. Rejouer
             // sert donc l'utilisateur qui attend, pendant que le libellé distinct sert
             // l'exploitant qui lit le journal.
             Self::Vide | Self::Tronquee => true,
-            // Le fournisseur a été joint et a refusé. Rien n'indique que la même requête
-            // aboutirait plus tard, et la cause la plus probable est une configuration
-            // fausse — qu'aucune reprise ne corrigera.
-            Self::RefusApplicatif => false,
-            Self::Refuse { code } => match *code {
-                // Débit dépassé, ou défaillance côté fournisseur.
-                429 | 500..=599 => true,
-                // 400 (requête mal formée), 401/403 (clé invalide) : refaire le même appel
-                // refera la même erreur.
-                _ => false,
-            },
+            // Le fournisseur a été joint et n'a pas rendu ce qu'il devait. Rien n'indique que
+            // la même requête aboutirait plus tard, et la cause la plus probable est une
+            // configuration fausse — qu'aucune reprise ne corrigera.
+            Self::RefusApplicatif | Self::ReponseIllisible => false,
+            Self::Refuse { code } => crate::panne::reprise_pour_statut(*code),
         }
     }
 }
