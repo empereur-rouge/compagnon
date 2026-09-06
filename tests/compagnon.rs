@@ -13,7 +13,6 @@ mod harnais;
 
 use compagnon::db::Base;
 use harnais::base::BaseDeTest;
-use std::collections::HashMap;
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -318,46 +317,11 @@ async fn les_bornes_de_forme_des_parametres_sont_tenues() {
 /// désactivées que la production refuse — et aucun test ne pouvait attraper une régression sur
 /// ce filtre.
 async fn compagnon_complet(pool: &PgPool, id: Uuid, curseurs: &[(&str, &str)]) {
-    use compagnon::db::personnages;
-    use compagnon::personnage::Cible;
-
-    let mut choix: HashMap<String, String> = [
-        ("genre", "femme"),
-        ("age", "25_34"),
-        ("morphologie", "elancee"),
-        ("cheveux", "brun"),
-        ("longueur_cheveux", "mi_longs"),
-        ("yeux", "vert"),
-        ("style", "decontracte"),
-        ("archetype", "timide"),
-        ("archetype2", "dominant"),
-        ("ton", "tendre"),
-    ]
-    .iter()
-    .map(|(c, v)| ((*c).to_owned(), (*v).to_owned()))
-    .collect();
-    for (code, valeur) in curseurs {
-        choix.insert((*code).to_owned(), (*valeur).to_owned());
-    }
-
+    // Délègue au harnais plutôt que de porter sa propre copie : les deux versions ont coexisté
+    // le temps d'un commit avec la même table de dix traits et la même suite d'écritures. Une
+    // colonne obligatoire ajoutée au catalogue en aurait cassé une et pas l'autre.
     let mut tx = pool.begin().await.expect("transaction");
-    personnages::poser_apparence(&mut tx, id, &choix)
-        .await
-        .expect("apparence");
-    personnages::poser_traits(&mut tx, id, &choix, Cible::Archetypes)
-        .await
-        .expect("archétypes");
-    personnages::poser_traits(&mut tx, id, &choix, Cible::Tons)
-        .await
-        .expect("tons");
-    personnages::poser_curseurs(&mut tx, id, &choix)
-        .await
-        .expect("curseurs");
-    sqlx::query("insert into personnage_parametres_interaction (personnage_id) values ($1)")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .expect("interaction");
+    harnais::base::composer_les_traits_avec(&mut tx, id, curseurs).await;
     tx.commit().await.expect("commit");
 }
 

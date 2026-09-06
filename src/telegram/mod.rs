@@ -27,6 +27,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::error::{ApiError, ErrorCode};
+use crate::secret::Secret;
 use envoi::{Action, ErreurEnvoi, Identite, MessageEnvoye, Panne, Reponse};
 use types::Update;
 
@@ -49,24 +50,37 @@ const MARGE_SCRUTATION: Duration = Duration::from_secs(10);
 #[derive(Debug, thiserror::Error)]
 pub enum ErreurCanal {
     /// Le client HTTP n'a pas pu être construit.
+    ///
+    /// Porte une [`Panne`] et non la `reqwest::Error` : celle-ci transporte l'URL de l'appel,
+    /// et la racine de ce canal contient le jeton du bot. C'est le chemin exact d'une fuite
+    /// déjà survenue ici.
     #[error("client HTTP inconstructible : {0}")]
-    Client(#[from] reqwest::Error),
+    Client(Panne),
 }
 
 /// Le canal Telegram d'une instance.
 ///
-/// Ne dérive ni `Debug` ni `Clone`, et les deux omissions sont délibérées. `Debug` rendrait le
-/// jeton imprimable par accident. `Clone` serait pire à retardement : le canal est toujours
-/// partagé par [`std::sync::Arc`], et une dérivation `Clone` laisserait un jour quelqu'un
-/// écrire `canal: Canal` dans un état cloné à chaque requête — deux allocations de secret par
-/// message, sans qu'aucun compilateur ne proteste. Interdire la copie du secret vers les
-/// journaux tout en autorisant la copie de la structure entière n'aurait pas de sens.
+/// `Debug` est **dérivé**, ce qui n'a pas toujours été le cas : la structure a longtemps refusé
+/// la dérivation parce qu'elle aurait rendu le jeton imprimable par accident. Ses deux champs
+/// secrets étant devenus des [`Secret`], la dérivation est désormais le rendu masqué — et le
+/// dériver vaut mieux que l'interdire, parce qu'une interdiction se contourne par un
+/// `format!("{:?}", canal.racine)` qu'aucun compilateur ne signalait.
+///
+/// `Clone` reste absent, et l'omission est délibérée : le canal est toujours partagé par
+/// [`std::sync::Arc`], et une dérivation laisserait un jour quelqu'un écrire `canal: Canal`
+/// dans un état cloné à chaque requête — deux allocations de secret par message, sans
+/// qu'aucun compilateur ne proteste.
+#[derive(Debug)]
 pub struct Canal {
     client: reqwest::Client,
-    /// `<racine api>/bot<jeton>` — secret.
-    racine: String,
-    /// Le secret attendu dans l'en-tête du webhook — secret.
-    secret: String,
+    /// `<racine api>/bot<jeton>`.
+    ///
+    /// L'URL **entière** est le secret, pas seulement le jeton qu'elle contient : c'est par
+    /// une URL rendue dans une erreur de transport que ce projet a écrit un jeton dans ses
+    /// journaux. D'où le [`Secret`] plutôt qu'une `String` — la voir exige `exposer()`.
+    racine: Secret,
+    /// Le secret attendu dans l'en-tête du webhook.
+    secret: Secret,
 }
 
 impl Canal {
@@ -77,14 +91,16 @@ impl Canal {
     /// Renvoie [`ErreurCanal::Client`] si le client HTTP ne peut être construit — en pratique,
     /// une pile TLS indisponible.
     pub fn new(config: &Config) -> Result<Self, ErreurCanal> {
-        let client = reqwest::Client::builder()
-            .timeout(DELAI_APPEL)
-            .connect_timeout(DELAI_CONNEXION)
-            .build()?;
+        let client = crate::panne::client_http(DELAI_APPEL, Some(DELAI_CONNEXION))
+            .map_err(ErreurCanal::Client)?;
 
         Ok(Self {
             client,
-            racine: format!("{}/bot{}", config.api_telegram, config.jeton_bot),
+            racine: Secret::nouveau(format!(
+                "{}/bot{}",
+                config.api_telegram,
+                config.jeton_bot.exposer()
+            )),
             secret: config.secret_webhook.clone(),
         })
     }
@@ -102,7 +118,7 @@ impl Canal {
             ApiError::new(ErrorCode::WebhookSecretInvalide, "en-tête de secret absent")
         })?;
 
-        if egal_temps_constant(presente.as_bytes(), self.secret.as_bytes()) {
+        if egal_temps_constant(presente.as_bytes(), self.secret.exposer().as_bytes()) {
             Ok(())
         } else {
             Err(ApiError::new(
@@ -178,7 +194,7 @@ impl Canal {
     pub async fn declarer_webhook(&self, url: &str) -> Result<(), ErreurEnvoi> {
         let corps = CorpsWebhook {
             url,
-            secret_token: &self.secret,
+            secret_token: self.secret.exposer(),
             allowed_updates: &["message"],
             drop_pending_updates: false,
         };
@@ -263,7 +279,7 @@ impl Canal {
         R: serde::de::DeserializeOwned,
         C: Serialize + ?Sized,
     {
-        let url = format!("{}/{methode}", self.racine);
+        let url = format!("{}/{methode}", self.racine.exposer());
         let requete = self.client.post(&url);
         let requete = match delai {
             Some(delai) => requete.timeout(delai),

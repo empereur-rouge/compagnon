@@ -645,8 +645,7 @@
   Stable ids on moments are required — annotations are keyed by moment id.
   Prefix a cell value with [Assumption] to flag it as unvalidated.
 -->
-<script type="application/json" id="journeys-data">
-{
+<script type="application/json" id="journeys-data">{
   "actors": [
     {
       "id": "utilisateur",
@@ -854,6 +853,96 @@
       ]
     },
     {
+      "id": "brancher-un-modele",
+      "title": "Branche un fournisseur de modèle et en mesure le coût",
+      "actor": "exploitant",
+      "category": "deploiement",
+      "scenario": "Le transport marche, le bot répond en écho. Il faut maintenant lui donner un modèle — et savoir ce qu'un message coûte avant de fixer le prix d'un abonnement.",
+      "goal": "Obtenir une vraie réponse d'un vrai fournisseur, et lire le coût de cet appel au tarif réel.",
+      "stages": [
+        {
+          "title": "Choisir et renseigner",
+          "moments": [
+            {
+              "id": "renseigner-le-fournisseur",
+              "title": "Renseigne le fournisseur dans .env",
+              "doing": "Renseigne MODELE_API_BASE, MODELE_API_CLE, MODELE_NOM, MODELE_FOURNISSEUR, puis recopie les deux tarifs depuis la page de prix du fournisseur.",
+              "thinking": "[Assumption] Pourquoi les tarifs sont-ils obligatoires alors que le reste a des valeurs par défaut ?",
+              "feeling": 3,
+              "pain": "Les tarifs se recopient à la main depuis une page web, et rien ne peut vérifier qu'ils sont justes : une virgule mal placée produit un registre de coûts faux, qui répond quand même à la question du prix.",
+              "opportunity": "[Assumption] Rapprocher périodiquement la somme du registre de la facture réelle du fournisseur, et signaler l'écart — c'est le seul contrôle possible sur un tarif saisi à la main.",
+              "evidence": "",
+              "frontstage": ".env.example, section « Le modèle de langue », commentée variable par variable.",
+              "backstage": "ConfigModele::depuis_environnement valide d'un coup : URL en http(s), tarifs décimaux et positifs, température dans [0,2], jetons non nuls. Un tarif absent refuse le démarrage en nommant la variable.",
+              "support": "src/modele/http.rs, src/config.rs."
+            }
+          ]
+        },
+        {
+          "title": "Éprouver",
+          "moments": [
+            {
+              "id": "essai-modele",
+              "title": "Lance compagnon modele essai",
+              "doing": "Exécute `compagnon modele essai \"Salut, tu vas bien ?\"` et lit ce qui revient : la réponse, le modèle réellement utilisé, les jetons, la durée mesurée et le coût.",
+              "thinking": "[Assumption] Est-ce que c'est bien le modèle que j'ai demandé qui a répondu ?",
+              "feeling": 4,
+              "pain": "Un serveur peut répondre avec un AUTRE modèle que celui demandé, sans erreur — constaté. Seule la ligne « modèle rendu » le révèle, et il faut penser à la lire.",
+              "opportunity": "[Assumption] Signaler explicitement l'écart entre le modèle demandé et le modèle rendu, au lieu de laisser l'exploitant comparer deux lignes.",
+              "evidence": "",
+              "frontstage": "La sortie de la commande : réponse, modèle rendu, fournisseur, jetons entrée/sortie, durée, troncature, coût à six décimales.",
+              "backstage": "ClientHttp::repondre fait UN appel POST /chat/completions avec un délai explicite. Pas de boucle de reprise : la file à bail en a déjà une, bornée et persistante.",
+              "support": "src/cli_modele.rs, src/modele/http.rs."
+            },
+            {
+              "id": "essai-modele-echoue",
+              "title": "L'essai échoue et il faut savoir pourquoi",
+              "doing": "Lit le message d'échec et la ligne « vaut une reprise » pour savoir s'il faut corriger la configuration ou simplement réessayer.",
+              "thinking": "[Assumption] Est-ce que c'est mon URL, ma clé, mon budget de jetons, ou le fournisseur qui a un problème ?",
+              "feeling": 2,
+              "pain": "Corrigé : une URL fausse rendait « le modèle n'a rien produit » et se réessayait, parce que le serveur répond 200 avec un corps d'erreur au lieu de 404. Elle rend désormais « le fournisseur a répondu 200 en annonçant une erreur », sans reprise.",
+              "opportunity": "[Assumption] Un mode diagnostic qui essaierait successivement /models puis /chat/completions dirait en une commande laquelle des deux couches est en cause.",
+              "evidence": "",
+              "frontstage": "Cinq messages distincts, chacun désignant sa cause : connexion impossible, délai dépassé, refus par code, refus applicatif, budget de jetons épuisé avant tout texte.",
+              "backstage": "ErreurModele::merite_une_reprise sépare ce qui se rejoue (délai, connexion, 429, 5xx, vide) de ce qui se refera échouer (400, 401, 403, refus applicatif).",
+              "support": "src/modele/mod.rs, src/panne.rs."
+            },
+            {
+              "id": "modele-a-raisonnement",
+              "title": "Le modèle réfléchit et ne dit rien",
+              "doing": "Constate des réponses vides et augmente MODELE_JETONS_MAX, ou change de modèle.",
+              "thinking": "[Assumption] Le modèle est cassé ? Non — il a dépensé tout son budget à réfléchir.",
+              "feeling": 2,
+              "pain": "Un modèle à raisonnement consomme son budget de sortie dans sa réflexion : mesuré, quatre appels sur cinq à 80 jetons rendaient un texte vide, et 575 jetons ont été facturés pour une réponse d'une phrase.",
+              "opportunity": "[Assumption] Déconseiller les modèles à raisonnement dans DECISIONS-MODELES.md : ils coûtent plusieurs fois le prix d'un modèle d'instruction pour un compagnon, et leur réflexion peut fuir dans la réponse.",
+              "evidence": "",
+              "frontstage": "Le message « la limite de jetons a coupé la génération avant tout texte », distinct de « le modèle n'a rien produit ».",
+              "backstage": "Le client distingue les deux par finish_reason : « length » avec un contenu vide désigne le budget, « stop » désigne un modèle réellement muet.",
+              "support": "src/modele/http.rs."
+            }
+          ]
+        },
+        {
+          "title": "Décider",
+          "moments": [
+            {
+              "id": "lire-le-cout",
+              "title": "Lit le coût et le projette",
+              "doing": "Multiplie le coût d'un message par le volume attendu pour situer le prix d'un abonnement.",
+              "thinking": "[Assumption] Un message à 0,0006 € fait 0,60 € les mille — un abonné actif tient-il dans le prix visé ?",
+              "feeling": 4,
+              "pain": "[Assumption] La projection se fait de tête, sur un seul appel, avec un prompt d'essai plus court qu'un vrai prompt de compagnon : elle sous-estime.",
+              "opportunity": "[Assumption] Une commande qui somme le registre par utilisateur et par mois donnerait le chiffre réel dès les premières semaines, ce que db::consommation::cout_depuis sait déjà calculer.",
+              "evidence": "",
+              "frontstage": "La ligne « coût » de la commande, à six décimales — la même précision que la colonne qui l'enregistrera.",
+              "backstage": "Chaque appel réel écrira une ligne dans consommation : registre append-only, seule mutation admise l'anonymisation RGPD, qui détache sans perdre le montant.",
+              "support": "migrations/0007_consommation.sql, src/db/consommation.rs."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "premier-message",
       "title": "Écrit au bot pour la première fois",
       "actor": "utilisateur",
@@ -901,8 +990,8 @@
               "doing": "Regarde l'en-tête de la discussion pendant que la réponse se prépare.",
               "thinking": "[Assumption] Il a reçu, il rédige.",
               "feeling": 4,
-              "pain": "[Assumption] En phase 0 l'indication et la réponse partent quasi simultanément : l'effet ne se voit pas. Et si sendChatAction échoue, l'échec est silencieux — c'est voulu, mais rien ne le mesure.",
-              "opportunity": "[Assumption] Dès qu'un modèle produira la réponse, tenir l'indication pendant toute la génération et la rafraîchir toutes les cinq secondes — Telegram l'efface passé ce délai.",
+              "pain": "L'attente est désormais réelle : neuf secondes mesurées sur un modèle de 24 milliards de paramètres, contre cinquante millisecondes pour l'écho de la phase 0. L'indication « en train d'écrire… » est tout ce que la personne voit pendant ce temps, et Telegram l'efface au bout de cinq secondes.",
+              "opportunity": "[Assumption] Renvoyer sendChatAction toutes les quatre secondes tant que le modèle génère, plutôt qu'une seule fois avant l'appel.",
               "evidence": "",
               "frontstage": "« est en train d'écrire… » sous le nom du bot.",
               "backstage": "worker::traiter appelle Canal::action(Typing) et ignore l'erreur : une indication non affichée ne doit pas empêcher la réponse.",
@@ -915,16 +1004,42 @@
           "moments": [
             {
               "id": "recevoir-echo",
-              "title": "Reçoit un écho, pas un personnage",
-              "doing": "Lit la réponse : son propre message entre guillemets, suivi d'une note disant que c'est un écho de phase 0.",
-              "thinking": "[Assumption] Ah — ce n'est pas encore fini. Au moins il me le dit.",
-              "feeling": 2,
-              "pain": "[Assumption] Sans age_verifie_le, l'utilisateur reçoit un message de vérification et non l'écho — honnête, mais rien dans Telegram ne permet encore de la poser : elle se fait par « compagnon utilisateur age », donc par le support.",
-              "opportunity": "[Assumption] Tant que la phase 1 n'est pas là, réserver le bot à un cercle fermé plutôt que de laisser un écho public déprécier la première impression — elle ne se rejoue pas. L'assistant que l'utilisateur vient créer est censé être le sien ; un écho anonyme est l'exact contraire de la promesse.",
+              "title": "Reçoit la réponse de son assistant",
+              "doing": "Lit ce que son assistant lui répond — un texte composé par un modèle de langue à partir du prompt que la modération a validé pour CE compagnon.",
+              "thinking": "[Assumption] Il m'a répondu comme quelqu'un, pas comme un formulaire.",
+              "feeling": 4,
+              "pain": "Le modèle n'obéit pas toujours aux règles fixes de son prompt : mesuré au premier essai de bout en bout, l'assistant a commenté une absence — « il y a eu un petit hiatus là » — alors que la règle 4 le lui interdit explicitement, dans le texte qu'il avait sous les yeux.",
+              "opportunity": "Les garde-fous de sortie de la phase 1.8 : une règle tenue par un mécanisme qui relit la réponse, et non par une phrase dans le prompt.",
               "evidence": "",
-              "frontstage": "« <votre message> » suivi de « (écho — phase 0 : le transport fonctionne, aucun personnage n'est encore branché) ».",
-              "backstage": "Un des quatre workers prend la tâche en base (bail de 120 s), vérifie age_verifie_le, envoie sendChatAction puis sendMessage, et clôt la tâche. Un envoi refusé la remet en file jusqu'à trois tentatives. L'ordre dans une conversation est tenu par la requête de prise, pas par le worker.",
-              "support": "src/worker.rs repondre, src/telegram/mod.rs envoyer_texte ; API Bot sendMessage."
+              "frontstage": "Le message reçu dans Telegram, découpé en plusieurs envois si le modèle dépasse 4096 unités UTF-16.",
+              "backstage": "worker::traiter lit le compagnon actif (db::dialogue::ouvrir), vérifie l'empreinte du prompt, appelle ClientModele::repondre, envoie, inscrit le message sortant et la ligne de coût. Mesuré sur un 24B : 9,2 s, 471 jetons d'entrée, 52 de sortie, 0,000088 €.",
+              "support": "src/worker.rs, src/db/dialogue.rs, src/modele/http.rs, src/db/consommation.rs."
+            },
+            {
+              "id": "sans-assistant",
+              "title": "Écrit alors qu'il n'a pas encore d'assistant",
+              "doing": "Envoie un message avant qu'un assistant ait été créé pour lui, et reçoit un message qui le dit.",
+              "thinking": "[Assumption] Comment j'en crée un, alors ?",
+              "feeling": 2,
+              "pain": "Le message dit qu'il n'a pas d'assistant et que la création n'est pas encore ouverte depuis Telegram — c'est-à-dire qu'il n'a rien à faire pour avancer. C'est un cul-de-sac tant que la phase 1.5 n'existe pas.",
+              "opportunity": "La phase 1.5 remplace ce message par le parcours de création lui-même. C'est le seul moment où l'attention de la personne est acquise.",
+              "evidence": "",
+              "frontstage": "« Tu n'as pas encore d'assistant. La création n'est pas encore ouverte depuis Telegram — elle arrive. »",
+              "backstage": "db::dialogue::ouvrir rend Interlocuteur::Aucun ; worker::conclure envoie et clôt la tâche. Le modèle n'est PAS appelé : rien n'est facturé pour quelqu'un qui n'a personne à qui parler.",
+              "support": "src/db/dialogue.rs, src/worker.rs."
+            },
+            {
+              "id": "assistant-indisponible",
+              "title": "Son assistant ne répond pas",
+              "doing": "Reçoit « Je n'arrive pas à répondre pour le moment. Réessaie dans un instant. » au lieu d'une réponse.",
+              "thinking": "[Assumption] Il est cassé ? Je réessaie quand ?",
+              "feeling": 1,
+              "pain": "[Assumption] Le message ne dit pas combien de temps attendre, et une panne prolongée le répète à l'identique à chaque tentative.",
+              "opportunity": "[Assumption] Distinguer une panne brève d'une panne longue, et proposer d'être prévenu au retour plutôt que de laisser réessayer à l'aveugle.",
+              "evidence": "",
+              "frontstage": "Un message neutre, qui ne joue pas le personnage : faire dire « je suis fatiguée » à l'assistant pour masquer une panne serait un mensonge, et le produit repose sur ce que la personne croit de lui. Aucun vocabulaire interne — ni code, ni nom de fournisseur.",
+              "backstage": "Le modèle a échoué. ErreurModele::merite_une_reprise décide : une panne passagère est remise en file (trois tentatives), une clé invalide ou un prompt altéré n'en consomme aucune. Quand il n'en reste plus, la personne est prévenue — un silence serait indiscernable d'un bot mort.",
+              "support": "src/worker.rs (echec_du_modele), src/modele/mod.rs."
             }
           ]
         }
@@ -1139,8 +1254,7 @@
       ]
     }
   ]
-}
-</script>
+}</script>
 
 <script>
 (function () {

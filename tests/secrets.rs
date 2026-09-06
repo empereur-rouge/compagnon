@@ -24,7 +24,17 @@ use compagnon::telegram::Canal;
 use harnais::{FauxTelegram, SECRET, update_privee};
 
 /// La partie du jeton qui ne doit jamais apparaître nulle part.
-const PARTIE_SECRETE: &str = "AAExempleDeJetonQuiNeSertAAbsolumen";
+///
+/// **Dérivée** du jeton de `fixtures`, jamais recopiée. Une copie littérale a existé ici : le
+/// jour où `JETON` aurait changé, les quatre `assert!(!rendu.contains(…))` seraient devenus
+/// vides de sens **en continuant de passer** — un test de non-fuite qui ne teste plus rien.
+/// `src/config.rs` avait déjà tiré la leçon et dérivait, lui.
+fn partie_secrete() -> &'static str {
+    compagnon::fixtures::JETON
+        .split_once(':')
+        .expect("le jeton d'exemple a la forme <id>:<secret>")
+        .1
+}
 
 #[tokio::test]
 async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
@@ -45,7 +55,7 @@ async fn une_panne_reseau_ne_laisse_pas_fuir_le_jeton() {
 
     for (nom, rendu) in [("Display", &display), ("Debug", &debug)] {
         assert!(
-            !rendu.contains(PARTIE_SECRETE),
+            !rendu.contains(partie_secrete()),
             "le jeton fuit dans le {nom} de l'erreur"
         );
         assert!(
@@ -71,7 +81,7 @@ async fn la_chaine_de_diagnostic_d_une_erreur_api_ne_traverse_pas_vers_une_url()
     println!("diagnostic complet : {diagnostic}");
 
     assert!(
-        !diagnostic.contains(PARTIE_SECRETE),
+        !diagnostic.contains(partie_secrete()),
         "le jeton fuit par la chaîne de causes"
     );
     assert!(
@@ -183,4 +193,28 @@ fn le_debug_de_la_config_ne_montre_pas_le_mot_de_passe_de_la_base() {
         rendu.contains("compagnon"),
         "l'utilisateur et la base doivent rester visibles"
     );
+}
+
+#[test]
+fn le_debug_du_canal_masque_le_jeton_qu_il_porte() {
+    // `Canal` a longtemps **refusé** de dériver `Debug`, précisément parce que sa racine porte
+    // le jeton. Une interdiction ne protège que ce qu'elle couvre : elle n'empêchait pas
+    // d'écrire `format!("{:?}", canal.racine)` un cran plus bas, ce qu'aucun compilateur
+    // n'aurait signalé.
+    //
+    // Les deux champs secrets étant devenus des `Secret`, la dérivation est désormais le rendu
+    // masqué. Ce test constate ce qu'elle produit — c'est le rendu qu'un `tracing::debug!` sur
+    // l'état partagé écrirait dans les journaux.
+    let config = compagnon::fixtures::config_de_test("https://api.telegram.org");
+    let canal = Canal::new(&config).expect("le client doit se construire");
+
+    let rendu = format!("{canal:?}");
+    println!("Debug de Canal :\n  {rendu}");
+
+    assert!(!rendu.contains(partie_secrete()), "le jeton fuit dans le Debug du canal");
+    assert!(!rendu.contains(SECRET), "le secret du webhook fuit dans le Debug du canal");
+    // La racine entière est masquée, pas seulement sa partie secrète : c'est l'URL complète
+    // qui a fui la première fois, et « api.telegram.org/bot123456789 » identifie déjà le bot.
+    assert!(!rendu.contains("api.telegram.org"), "l'URL de l'API fuit dans le Debug du canal");
+    assert!(rendu.contains("masqué"), "le rendu doit dire qu'il masque quelque chose");
 }

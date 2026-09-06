@@ -5,20 +5,17 @@
 //! la production. Ne restent ici que la journalisation, la lecture des arguments et le code de
 //! sortie — ce qui appartient à un binaire.
 //!
-//! ```text
-//! compagnon                          sert le webhook et fait tourner le worker
-//! compagnon ecouter                  reçoit par scrutation, sans domaine ni TLS
-//! compagnon sonde                    interroge /health, sort en 0 ou 1 (HEALTHCHECK)
-//! compagnon catalogues               ce parmi quoi un compagnon peut être composé
-//! compagnon compagnon creer …        crée un compagnon à partir de choix
-//! compagnon compagnon montrer <id>   affiche le prompt composé
-//! compagnon utilisateur age <id>     enregistre une vérification d'âge
-//! compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
-//! compagnon webhook retirer          retire le webhook
-//! ```
+//! Les commandes sont listées dans [`USAGE`], et à un seul endroit : les deux listes qui
+//! coexistaient ici avaient **déjà divergé** — l'une ignorait `compagnon activer` et
+//! `compagnon verifier`, l'autre `catalogues`, `compagnon creer/montrer` et `utilisateur age`.
+//! Une liste qui se maintient à deux endroits n'est à jour nulle part.
+
+use std::sync::Arc;
 
 use compagnon::config::Config;
-use compagnon::{VERSION, app, cli, cli_compagnon, telemetry};
+use compagnon::modele::ClientModele;
+use compagnon::modele::http::{ClientHttp, ConfigModele};
+use compagnon::{VERSION, app, cli, cli_compagnon, cli_modele, telemetry};
 
 /// Code de sortie quand le service refuse de démarrer, ou qu'une commande échoue.
 const SORTIE_ERREUR: i32 = 1;
@@ -34,6 +31,17 @@ compagnon — plateforme de personnages conversationnels sur Telegram
   compagnon ecouter                  reçoit par scrutation — ni domaine, ni TLS, ni tunnel ;
                                      pour éprouver le bot depuis un poste de travail
   compagnon sonde                    interroge /health, sort en 0 ou 1
+
+  compagnon catalogues               ce parmi quoi un compagnon peut être composé
+  compagnon compagnon creer …        crée un compagnon à partir de choix de catalogue
+  compagnon compagnon montrer <id>   affiche le prompt composé et son empreinte
+  compagnon compagnon verifier <id>  passe le compagnon par la modération
+  compagnon compagnon activer <id>   active un compagnon validé
+  compagnon utilisateur age <id>     enregistre une vérification d'âge
+
+  compagnon modele essai <texte>     appelle le fournisseur configuré pour de vrai : réponse,
+                                     jetons, durée mesurée et coût au tarif en vigueur
+
   compagnon webhook declarer <url>   déclare l'adresse du webhook auprès de Telegram
   compagnon webhook retirer          retire le webhook
 
@@ -101,6 +109,13 @@ async fn main() {
                 cli_compagnon::verifier_age(&config_ou_sortir(), utilisateur).await,
             );
         }
+        ["modele", "essai", reste @ ..] if !reste.is_empty() => {
+            telemetry::init_vers_stderr();
+            if let Err(erreur) = cli_modele::essai(&reste.join(" ")).await {
+                eprintln!("{erreur}");
+                std::process::exit(SORTIE_ERREUR);
+            }
+        }
         ["webhook", "retirer"] => {
             telemetry::init_vers_stderr();
             rendre_compte(cli::retirer_webhook(&config_ou_sortir()).await);
@@ -108,6 +123,38 @@ async fn main() {
         _ => {
             eprint!("{USAGE}");
             std::process::exit(SORTIE_USAGE);
+        }
+    }
+}
+
+/// Construit le client de modèle, ou sort en nommant ce qui manque.
+///
+/// Séparé de [`config_ou_sortir`] parce que les deux configurations n'ont pas la même portée :
+/// les commandes d'exploitation — sonde, webhook — n'ont aucune raison d'exiger une clé de
+/// fournisseur, et la leur imposer bloquerait un diagnostic au moment où on en a besoin.
+///
+/// En revanche, `servir` et `ecouter` l'exigent, et l'exigent **au démarrage**. Un service qui
+/// part sans modèle ne se découvre qu'au premier message, c'est-à-dire devant quelqu'un.
+fn modele_ou_sortir() -> Arc<dyn ClientModele> {
+    let config = match ConfigModele::depuis_environnement() {
+        Ok(config) => config,
+        Err(erreur) => {
+            tracing::error!(%erreur, "configuration du modèle refusée");
+            std::process::exit(SORTIE_ERREUR);
+        }
+    };
+    tracing::info!(
+        fournisseur = %config.fournisseur,
+        modele = %config.modele,
+        jetons_max = config.jetons_max,
+        delai = ?config.delai,
+        "modèle configuré"
+    );
+    match ClientHttp::new(config) {
+        Ok(client) => Arc::new(client),
+        Err(erreur) => {
+            tracing::error!(%erreur, "client de modèle impossible à construire");
+            std::process::exit(SORTIE_ERREUR);
         }
     }
 }
@@ -153,7 +200,7 @@ async fn ecouter() {
     let config = config_ou_sortir();
     tracing::info!(config = ?config, "configuration chargée");
 
-    if let Err(erreur) = app::scruter(&config, app::signal_d_arret()).await {
+    if let Err(erreur) = app::scruter(&config, modele_ou_sortir(), app::signal_d_arret()).await {
         tracing::error!(%erreur, "la scrutation s'est arrêtée sur une erreur");
         std::process::exit(SORTIE_ERREUR);
     }
@@ -165,7 +212,7 @@ async fn servir() {
     let config = config_ou_sortir();
     tracing::info!(config = ?config, "configuration chargée");
 
-    if let Err(erreur) = app::servir(&config, app::signal_d_arret()).await {
+    if let Err(erreur) = app::servir(&config, modele_ou_sortir(), app::signal_d_arret()).await {
         tracing::error!(%erreur, "le service s'est arrêté sur une erreur");
         std::process::exit(SORTIE_ERREUR);
     }

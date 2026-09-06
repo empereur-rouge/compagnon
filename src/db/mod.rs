@@ -16,6 +16,8 @@
 //! c'est une propriété de la bibliothèque et non du code de ce projet.
 
 pub mod catalogues;
+pub mod consommation;
+pub mod dialogue;
 pub mod file;
 pub mod personnages;
 pub mod utilisateurs;

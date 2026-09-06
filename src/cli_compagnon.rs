@@ -70,7 +70,7 @@ fn exiger<'a>(champs: &'a HashMap<String, String>, cle: &str) -> Result<&'a str,
 ///
 /// [`ErreurCompagnon::Base`] si la base ne répond pas.
 pub async fn montrer_catalogues(config: &Config) -> Result<(), ErreurCompagnon> {
-    let base = Base::ouvrir(&config.url_base).await?;
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
     let pool = base.pool();
 
     for catalogue in catalogues::Catalogue::tous() {
@@ -129,7 +129,7 @@ pub async fn montrer_catalogues(config: &Config) -> Result<(), ErreurCompagnon> 
 /// [`ErreurCompagnon`] si un champ manque, si un code ne désigne rien, ou si la base refuse.
 pub async fn creer(config: &Config, mots: &[&str]) -> Result<(), ErreurCompagnon> {
     let champs = en_champs(mots)?;
-    let base = Base::ouvrir(&config.url_base).await?;
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
     let pool = base.pool();
 
     let utilisateur: i64 = exiger(&champs, "utilisateur")?
@@ -232,7 +232,7 @@ pub async fn verifier_age(config: &Config, utilisateur: &str) -> Result<(), Erre
     let utilisateur: i64 = utilisateur
         .parse()
         .map_err(|_| ErreurCompagnon::Usage("l'identifiant doit être un nombre".to_owned()))?;
-    let base = Base::ouvrir(&config.url_base).await?;
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
     utilisateurs::verifier_age(base.pool(), utilisateur, "declaration").await?;
     println!("utilisateur {utilisateur} : âge vérifié (méthode « declaration »)");
     eprintln!(
@@ -294,7 +294,7 @@ async fn compagnon_de(
     let utilisateur: i64 = utilisateur
         .parse()
         .map_err(|_| ErreurCompagnon::Usage("l'identifiant doit être un nombre".to_owned()))?;
-    let base = Base::ouvrir(&config.url_base).await?;
+    let base = Base::ouvrir(config.url_base.exposer()).await?;
 
     let ligne: Option<(Uuid, Option<String>)> = sqlx::query_as(
         "select p.id, u.code_pays_declare

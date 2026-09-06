@@ -1,8 +1,8 @@
 ---
 tags: [feature]
 created: 2026-09-05
-updated: 2026-09-05
-version: v0.3.0
+updated: 2026-09-06
+version: v0.10.0
 ---
 
 # Persistance — base, file à bail, consommateurs concurrents
@@ -14,8 +14,8 @@ savait rien d'un utilisateur entre deux messages. Cette phase met PostgreSQL sou
 remplace la file par une table **à bail**, et fait consommer **quatre workers en parallèle** au
 lieu d'un seul.
 
-Le bot répond toujours en écho. Rien de ce qui suit ne change ce qu'il dit — cette phase change
-ce qui survit, et ce qui avance en même temps.
+Cette phase ne change pas ce que le bot dit — elle change ce qui survit, et ce qui avance en
+même temps. Ce qu'il dit vient du modèle depuis la phase 1.3 : voir [[client-modele]].
 
 ## Ce que ça règle, et pourquoi maintenant
 
@@ -25,8 +25,9 @@ Deux limites, dont une qui n'était pas encore visible.
 ne survit pas au processus qui la porte.
 
 **Le sérialisme** ne se voyait pas encore. Traiter un message à la fois donnait l'ordre
-gratuitement, et un écho coûte cinquante millisecondes. Dès que la réponse coûtera un appel de
-modèle — deux à cinq secondes —, ce même sérialisme fait attendre la centième personne d'une
+gratuitement, et un écho coûte cinquante millisecondes. Le pari est désormais mesuré : un appel
+de modèle prend **neuf secondes** de bout en bout sur un 24B. À ce prix, le sérialisme ferait
+attendre la centième personne d'une
 rafale pendant cinq minutes. Sans erreur, sans journal alarmant : le bot paraît simplement mort.
 Le corriger après coup aurait demandé de reprendre la file ; le corriger maintenant ne coûte que
 la requête de prise.
@@ -38,7 +39,9 @@ la requête de prise.
 | `MOTDEPASSE_BASE` | mot de passe PostgreSQL, sert aussi à initialiser le conteneur |
 | `DATABASE_URL` | connexion complète ; **secret**, elle porte le mot de passe |
 
-Le `Debug` de `Config` ne montre de l'URL que le schéma, l'utilisateur, l'hôte et la base :
+`Config::url_base` est un `Secret` (voir [[transport-telegram]]), dont le `Debug` ne montre
+qu'une longueur. Le `Debug` de `Config` en rend davantage, parce qu'un incident commence par
+« quelle base ? » — le schéma, l'utilisateur, l'hôte et la base, jamais le mot de passe :
 savoir où l'on est connecté est la première question d'un incident, le mot de passe n'a rien à
 y faire.
 

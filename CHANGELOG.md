@@ -5,6 +5,185 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.11.0] - 2026-09-06
+
+Revue `/simplify` de la phase 1.3, premier volet : les garanties que la phase affirmait et ne
+tenait pas. Chacune reproduite sur un PostgreSQL réel avant correctif.
+
+### Fixed
+
+- **fix(db)** : `consommation` se vidait par `truncate`. Un trigger `for each row` n'est **jamais**
+  appelé par `truncate`, qui ne parcourt aucune ligne — la table annoncée « append-only »
+  s'effaçait donc d'une instruction plus courte que celle qui était refusée. Trigger
+  `for each statement` ajouté.
+- **fix(db)** : une ligne de coût pouvait **naître** orpheline, avec n'importe quel montant. La
+  contrainte `(anonymisee_le is null) = (utilisateur_id is not null)` est satisfaite par le couple
+  inverse ; elle décrit un état là où le registre exige une transition. Un `check` ne voit qu'une
+  ligne, jamais son histoire : c'est un trigger `before insert` qui porte la distinction.
+- **fix(db)** : `personnage_parametres_modele` était la **seule table exclue** de la doctrine de la
+  migration 0006 — et c'est celle qui porte le texte que la modération a examiné. Réécrire
+  `prompt_systeme_genere` en gardant `valide_le` traversait tout l'appareil : statut actif
+  conservé, aucune révocation. Un prompt qui change sans que sa validation soit réémise perd
+  désormais `valide_le`, et le compagnon retombe en `brouillon`.
+- **fix(db)** : le message entrant était réinscrit à chaque reprise — mesuré, trois copies après
+  trois tentatives. `inscrire_message` est devenue idempotente, adossée à un index unique partiel
+  sur `(conversation_id, identifiant_telegram)`. La conséquence de la phase 2 était la vraie :
+  cette table composera l'historique envoyé au modèle.
+
+### Changed
+
+- **change(doc)** : les affirmations que ces correctifs contredisaient sont réécrites plutôt que
+  laissées — dans `migrations/0007`, dans `documentation/client-modele.md`. Le contrôle
+  d'empreinte du prompt y est désormais décrit pour ce qu'il est : un contrôle de cohérence, pas
+  un sceau, franchissable en une instruction. Un HMAC dont la clé vivrait hors de la base est
+  **proposé, non appliqué** — c'est une décision de déploiement.
+
+### Changed
+
+- **change(panne)** : la table de reprise sur code HTTP rejoint `crate::panne`
+  (`reprise_pour_statut`). Elle était écrite deux fois — Telegram et modèle — et c'est la partie
+  qui **change** : un fournisseur ajoute un `529`, un autre veut `408`. Le module avait été créé
+  pour ce motif exact et s'était arrêté à la classification du transport.
+- **change(panne)** : `client_http` — un constructeur de client HTTP partagé. Trois endroits en
+  bâtissaient un, avec trois traitements de l'échec ; la sonde `/health` **empruntait la variante
+  d'erreur du canal Telegram** pour rapporter l'échec de son propre client, envoyant l'exploitant
+  chercher au mauvais endroit. Plus aucun type d'erreur ne porte de `reqwest::Error` :
+  `ErreurCanal::Client` et `ErreurCli::Injoignable` portent une `Panne`.
+- **change(modele)** : `ErreurModele` dérive `Clone`, et l'énumération parallèle du double
+  disparaît. Cette copie manuscrite avait déjà oublié `RefusApplicatif` et `Tronquee` — les deux
+  variantes ajoutées après mesure sur un vrai serveur, dont la seule non rejouable. Le
+  comportement du worker face à elle n'était éprouvable par aucun test.
+- **change(db)** : `file::abandonner` remplace `file::echouer(…, 0)`, et `TENTATIVES_MAX` descend
+  dans `db::file`. La borne de reprise est une politique de la file, pas un nombre que ses
+  appelants choisissent — rien n'empêchait un futur appelant d'écrire `7`.
+- **change(worker)** : `inscrire_au_registre` dérive le statut et le coût de la présence d'une
+  réponse au lieu de les recevoir. Les trois sites obéissaient à une règle qu'aucun n'énonçait ;
+  un quatrième aurait pu faire mentir le registre sans qu'aucun test ne l'attrape.
+- **change(worker)** : les trois contrôles — âge, compagnon actif, empreinte du prompt — sont
+  réunis dans `Interlocuteur`, donc dans un `match` exhaustif. Ils n'étaient tenus ensemble que
+  par l'**ordre de deux instructions** dans une fonction que la phase 2 va allonger.
+- **change(personnage)** : `empreinte` et `sceau_valide` — la formule était écrite trois fois,
+  et c'est celle dont dépend le seul point de contrôle de la modération. C'est aussi le seul
+  endroit à changer le jour où le sceau deviendra un HMAC.
+- **change(modele)** : `ConfigModele` dérive `Debug`. L'implémentation manuscrite reproduisait
+  exactement le dérivé — sauf qu'un dixième champ en aurait été silencieusement absent, donc
+  absent de `compagnon modele essai`, l'outil dont la raison d'être est de montrer la
+  configuration réelle.
+
+### Added
+
+- **feat(modele)** : `ErreurModele::ReponseIllisible` — un corps arrivé entier et non conforme,
+  qui **ne se rejoue pas**, distinct d'un corps interrompu qui se rejoue. Sans elle, une
+  `MODELE_API_BASE` désignant un autre service consommait trois générations facturées avant
+  d'être abandonnée.
+- **test** : `le_registre_ne_se_vide_pas_et_aucune_ligne_ne_nait_orpheline`,
+  `reecrire_le_prompt_valide_revoque_la_validation`,
+  `revalider_un_compagnon_ne_revoque_pas_ce_qu_on_vient_de_valider`,
+  `reecrire_le_prompt_en_console_desactive_le_compagnon` — les deux barrières du prompt sont
+  désormais éprouvées séparément, pour deux gestes de console différents.
+- **test** : `un_corps_non_conforme_ne_se_rejoue_pas`.
+- **test(harnais)** : `prete_a_converser` et `composer_les_traits_avec` — le préambule commun
+  était recopié huit fois dans cinq fichiers, et la fabrique en SQL brut de `tests/garanties.rs`
+  avait **déjà divergé** : elle résolvait les codes de catalogue sans le filtre `actif` que la
+  production applique. C'est le défaut que `db::personnages` documente comme déjà survenu, revenu
+  par la porte des tests.
+
+## [0.10.0] - 2026-09-06
+
+Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
+
+### Added
+
+- **feat(secret)** : `Secret`, une valeur qui ne **peut pas** atterrir dans un journal. Pas de
+  `Display` — `format!("{secret}")` ne compile pas — pas de `Deref<Target = str>`, et un `Debug`
+  qui rend `<masqué, N caractères>`. Ce projet a laissé fuir un secret deux fois, et les deux
+  fois la règle existait dans un commentaire plutôt que dans un type. `exposer()` est nommé pour
+  être désagréable : `rg 'exposer\('` donne la liste exhaustive des points de sortie.
+- **feat(modele)** : le trait `ClientModele`, avec `ContexteConversation`, `ReponseModele` et
+  `ErreurModele`. Le fournisseur de calcul va changer — serverless d'abord, GPU dédié ensuite —
+  et le worker ne doit pas bouger pour autant.
+- **feat(modele)** : `ErreurModele::merite_une_reprise()` distingue ce qui se rejoue (délai,
+  connexion, génération vide, `429`, `5xx`) de ce qui se refera échouer à l'identique (`400`,
+  `401`, `403`). Sans cette distinction, une clé invalide consomme toutes les tentatives et un
+  délai dépassé perd le message de quelqu'un qui l'attend.
+- **feat(modele)** : `modele::double` — un `ClientModele` qui joue un scénario écrit d'avance
+  puis en répète le dernier acte. « Échoue deux fois puis aboutit » s'écrit donc sans variante
+  dédiée, et les pannes du fournisseur — qui sont rares, non reproductibles, et arrivent en
+  production — deviennent éprouvables.
+- **test** : six tests sur le contrat, dont `le_prompt_arrive_au_modele_tel_quel`, qui fixe la
+  moitié aval d'une garantie décidée en 1.2 : le worker lira `prompt_systeme_genere` plutôt que
+  de recomposer les traits, parce que c'est le texte que la modération a approuvé.
+
+- **feat(modele)** : `modele::http::ClientHttp`, l'implémentation concrète contre une API
+  compatible `POST /chat/completions`. Retenue non par attachement à un fournisseur mais parce
+  que vLLM, TGI et la quasi-totalité des hébergeurs de GPU l'exposent déjà : c'est ce qui rend
+  le remplacement de backend réel plutôt que théorique.
+- **feat(db)** : migration `0007_consommation.sql` et `db::consommation`. Registre **append-only**
+  tenu par trigger : ni `update` ni `delete`, à une exception décrite exactement — l'anonymisation
+  RGPD, qui détache la ligne de son utilisateur sans en perdre le montant. Le trigger compare la
+  ligne entière plutôt qu'une liste de colonnes, pour que toute colonne future soit couverte le
+  jour où elle apparaît.
+- **feat(cli)** : `compagnon modele essai <texte>` — un appel réel au fournisseur configuré, qui
+  imprime la réponse, le modèle **rendu**, les jetons, la durée mesurée et le coût à six
+  décimales. C'est l'outil qui a trouvé les deux défauts ci-dessous.
+- **test** : neuf tests du client HTTP rejouant des formes de réponse **relevées sur un vrai
+  serveur**, et cinq tests du registre sur un vrai PostgreSQL — dont
+  `tout_le_vocabulaire_rust_est_accepte_par_la_base`, qui écrit les 45 combinaisons de
+  `type` × `origine` × `statut` et attrape une variante ajoutée d'un seul côté.
+
+- **feat(worker)** : le worker appelle le modèle à la place de l'écho. Il lit le compagnon actif,
+  **vérifie l'empreinte** de son prompt validé, appelle, envoie, inscrit le fil et la ligne de
+  coût. Trois refus n'appellent jamais le modèle : âge non vérifié, aucun compagnon actif,
+  prompt altéré hors processus.
+- **feat(db)** : `db::dialogue` — le compagnon actif, son prompt validé, l'ouverture du fil et
+  l'inscription des messages. Le prompt est **lu** et non recomposé : c'est huit lectures de
+  moins par message, et surtout c'est le texte que la modération a approuvé.
+- **feat(app)** : `preparer`, `servir` et `scruter` reçoivent le client de modèle au lieu de le
+  construire. C'est ce qui permet aux tests d'injecter un double et d'éprouver le service entier
+  face à un fournisseur qui expire, refuse, ou ne rend rien.
+- **test** : `tests/dialogue.rs` — cinq situations de panne éprouvées de bout en bout, dont
+  `un_prompt_altere_hors_processus_ferme_l_acces_au_modele`. Vérifié aussi sur le **vrai chemin**
+  (service réel, PostgreSQL réel, Mistral 24B réel, console `psql` pour l'altération) : le modèle
+  n'est pas appelé, le code d'erreur journalisé est `9001`, et rien n'est facturé.
+- **test(harnais)** : `BaseDeTest::compagnon_actif` — une fabrique unique, sur le chemin de
+  production. Trois fabriques manuscrites avaient coexisté, dont deux déjà divergentes.
+
+### Fixed
+
+- **fix(worker)** : un message de service — âge non vérifié, aucun compagnon, indisponibilité —
+  dont l'envoi échouait clôturait quand même la tâche, perdant silencieusement le seul message
+  qui distingue un refus d'une panne. Son envoi est désormais repris comme n'importe quel autre.
+- **fix(modele)** : un fournisseur qui répond **`200 OK`** avec `{"error": …}` était lu comme une
+  génération vide, donc comme un incident passager, donc rejoué. Constaté sur un vrai serveur :
+  c'est ce qu'il rend sur un chemin inexistant, là où un faux serveur aurait rendu `404`. Une URL
+  mal saisie épuisait donc les tentatives en affichant « le modèle n'a rien produit ».
+  `ErreurModele::RefusApplicatif` la classe désormais comme permanente.
+- **fix(modele)** : une génération coupée par la limite de jetons **avant tout texte** rendait le
+  même message qu'un modèle réellement muet. Mesuré sur un modèle à raisonnement : quatre appels
+  sur cinq à `max_tokens = 80` rendent `content: ""` avec `finish_reason: "length"`.
+  `ErreurModele::Tronquee` envoie vers `MODELE_JETONS_MAX` au lieu d'envoyer chercher une panne
+  de modèle.
+
+### Changed
+
+- **change(panne)** : `Panne` quitte `telegram::envoi` pour `crate::panne`. Deux copies du même
+  énuméré avaient coexisté le temps d'un commit, et deux copies d'une garantie divergent — celle
+  qu'on oublie de corriger devient celle par laquelle la fuite revient.
+- **change(secret)** : les trois secrets existants passent par `Secret` — `Config::jeton_bot`,
+  `Config::secret_webhook`, `Config::url_base`, ainsi que `Canal::racine` et `Canal::secret`.
+  Leur protection reposait jusqu'ici sur un `Debug` écrit à la main et sur l'**absence** de
+  dérivations : deux garanties qui ne couvrent que ce qu'elles nomment, alors que le champ
+  restait une `String` que n'importe quel `format!` un cran plus bas pouvait rendre.
+- **change(telegram)** : `Canal` dérive `Debug`, après l'avoir longtemps refusé. Ses deux champs
+  secrets étant des `Secret`, la dérivation **est** le rendu masqué — et un rendu masqué vaut
+  mieux qu'une interdiction, qui laissait `format!("{:?}", canal.racine)` passer sans un mot du
+  compilateur. `tests/secrets.rs` imprime désormais ce rendu.
+- **change(modele)** : `ErreurModele` classe la panne au lieu de la transporter — `Panne` est un
+  enum nu, `Refuse` ne porte qu'un `u16`, et le corps d'une réponse de fournisseur n'entre nulle
+  part. Même correctif que `telegram::envoi::Panne`, appliqué **avant** la fuite plutôt qu'après :
+  un message d'erreur de fournisseur reprend souvent la requête, donc le prompt système, donc
+  tout ce que le compagnon est.
+
 ## [0.9.1] - 2026-09-05
 
 ### Changed
@@ -530,6 +709,8 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.11.0 | 2026-09-06 | revue 1.3 — garanties mesurées, duplications supprimées |
+| 0.10.0 | 2026-09-06 | 1.3 — client modèle, registre des coûts, le compagnon répond |
 | 0.9.1 | 2026-09-05 | écritures partagées, filtre actif éprouvé |
 | 0.9.0 | 2026-09-05 | revue 1.2 — garanties sur le texte |
 | 0.8.0 | 2026-09-05 | 1.2e — création et exploitation |

@@ -47,76 +47,10 @@ pub enum Action {
     RecordVoice,
 }
 
-/// Ce qui a fait échouer un appel réseau, classé de telle sorte qu'aucune URL ne puisse suivre.
-///
-/// # Pourquoi un énuméré et non le `reqwest::Error`
-///
-/// Le jeton du bot est un segment de l'URL. Or `reqwest::Error` **transporte** l'URL, et son
-/// `Display` comme son `Debug` l'impriment — le crate le documente lui-même et offre un
-/// `without_url()` pour cette raison. Conserver la cause telle quelle et se promettre de ne
-/// jamais la journaliser est exactement la forme de garantie qui a déjà échoué ici : le module
-/// affirmait « aucune URL n'atteint un journal » pendant que `worker::traiter` écrivait
-/// `%erreur` sur chaque envoi manqué, jeton compris, dans des journaux que `compose.yaml`
-/// persiste sur disque.
-///
-/// La classification retire au type la **capacité** de porter une URL. Ce n'est plus une règle
-/// à tenir, c'est une propriété que le compilateur garantit — y compris pour tout parcours de
-/// `source()`, comme celui d'[`crate::error::ApiError::diagnostic`].
-///
-/// Ce qu'on perd : le détail de la cause système (« connection refused » plutôt que
-/// « connexion impossible »). Ce qu'on garde : de quoi décider s'il faut réessayer, ce qui est
-/// la seule chose dont le code se sert.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Panne {
-    /// L'appel n'a pas abouti dans le délai imparti.
-    Delai,
-    /// La connexion n'a pas pu être établie : DNS, refus, TLS.
-    Connexion,
-    /// La réponse est arrivée mais n'a pas pu être lue.
-    Corps,
-    /// La requête elle-même n'a pas pu être formée ou émise.
-    Requete,
-    /// Rien de ce qui précède.
-    Autre,
-}
-
-impl Panne {
-    /// Classe une erreur `reqwest`, sans en retenir autre chose que sa nature.
-    ///
-    /// Prend la référence et ne la conserve pas : c'est ce qui garantit que l'URL ne survit
-    /// pas à l'appel.
-    pub(super) fn classer(erreur: &reqwest::Error) -> Self {
-        if erreur.is_timeout() {
-            Self::Delai
-        } else if erreur.is_connect() {
-            Self::Connexion
-        } else if erreur.is_decode() || erreur.is_body() {
-            Self::Corps
-        } else if erreur.is_request() {
-            Self::Requete
-        } else {
-            Self::Autre
-        }
-    }
-
-    /// Libellé lisible en journal.
-    #[must_use]
-    pub const fn libelle(self) -> &'static str {
-        match self {
-            Self::Delai => "délai dépassé",
-            Self::Connexion => "connexion impossible",
-            Self::Corps => "réponse illisible",
-            Self::Requete => "requête non émise",
-            Self::Autre => "cause indéterminée",
-        }
-    }
-}
-
-impl std::fmt::Display for Panne {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.libelle())
-    }
-}
+// Réexporté plutôt que redéfini : la classification d'une panne de transport n'a rien de
+// spécifique à Telegram, et une garantie en double diverge — celle qu'on oublie de corriger
+// devient celle par laquelle la fuite revient. L'histoire de cette fuite est dans `crate::panne`.
+pub use crate::panne::Panne;
 
 /// Ce qui a empêché un envoi d'aboutir.
 ///

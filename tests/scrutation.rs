@@ -13,7 +13,10 @@ mod harnais;
 
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use compagnon::app;
+use compagnon::modele::double::ModeleDouble;
 use harnais::{FauxTelegram, update_privee};
 use tokio::sync::oneshot;
 
@@ -23,9 +26,12 @@ async fn lancer(
     base: &harnais::base::BaseDeTest,
 ) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let config = faux.config(&base.url);
+    // La scrutation partage le worker du service webhook : elle a donc besoin du même modèle,
+    // et c'est précisément ce que le test veut prouver — les deux portes mènent au même code.
+    let modele = Arc::new(ModeleDouble::qui_repete());
     let (arret, reception) = oneshot::channel();
     let tache = tokio::spawn(async move {
-        app::scruter(&config, async move {
+        app::scruter(&config, modele, async move {
             let _ = reception.await;
         })
         .await
@@ -41,7 +47,7 @@ async fn un_message_scrute_ressort_par_la_meme_porte_qu_un_message_webhook() {
         .await;
 
     let base = harnais::base::BaseDeTest::creer().await;
-    base.verifier_age(42).await;
+    base.prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     let (arret, tache) = lancer(&faux, &base).await;
 
     // La réponse doit partir exactement comme si le message était entré par le webhook.
@@ -54,9 +60,9 @@ async fn un_message_scrute_ressort_par_la_meme_porte_qu_un_message_webhook() {
     let texte = messages[0]["text"].as_str().unwrap_or_default();
     println!("\ntexte envoyé :\n---\n{texte}\n---");
     assert_eq!(messages[0]["chat_id"], 42);
-    assert!(
-        texte.contains("salut par scrutation"),
-        "l'écho doit reprendre le message reçu"
+    assert_eq!(
+        texte, "salut par scrutation",
+        "le modèle a reçu le message et sa réponse est partie par la même porte"
     );
 
     // L'indication d'activité aussi : c'est le worker de production qui tourne, pas un
@@ -123,7 +129,7 @@ async fn l_offset_avance_pour_accuser_ce_qui_a_ete_pris() {
     .await;
 
     let base = harnais::base::BaseDeTest::creer().await;
-    base.verifier_age(42).await;
+    base.prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     let (arret, tache) = lancer(&faux, &base).await;
 
     // Les trois doivent ressortir, dans l'ordre.
@@ -135,9 +141,7 @@ async fn l_offset_avance_pour_accuser_ce_qui_a_ete_pris() {
     for (rang, texte) in textes.iter().enumerate() {
         println!("{rang} : {}", texte.lines().next().unwrap_or_default());
     }
-    assert!(textes[0].contains("« un »"));
-    assert!(textes[1].contains("« deux »"));
-    assert!(textes[2].contains("« trois »"));
+    assert_eq!(textes, ["un", "deux", "trois"]);
 
     // Redonner l'offset est ce qui ACQUITTE auprès de Telegram : sans progression, le même lot
     // serait rejoué indéfiniment. Le premier appel part de 0, les suivants doivent dépasser le

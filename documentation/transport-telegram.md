@@ -1,8 +1,8 @@
 ---
 tags: [feature]
 created: 2026-09-05
-updated: 2026-09-05
-version: v0.2.0
+updated: 2026-09-06
+version: v0.10.0
 ---
 
 # Transport Telegram
@@ -92,6 +92,7 @@ docker compose exec bot compagnon webhook declarer https://$DOMAINE/webhook
 |---|---|---|
 | `http::authentifier` | `src/http.rs` | couche posée devant la route ; s'exécute **avant** la lecture du corps |
 | `Canal::authentifier` | `src/telegram/mod.rs` | compare le secret présenté en temps constant |
+| `Secret::exposer` | `src/secret.rs` | seul accès à la valeur — d'où l'exhaustivité de `rg 'exposer\('` |
 | `egal_temps_constant` | `src/telegram/mod.rs` | comparaison sans divulgation par la durée |
 | `Canal::envoyer_texte` | `src/telegram/mod.rs` | découpe puis envoie, un `sendMessage` par morceau |
 | `Canal::appeler` | `src/telegram/mod.rs` | corps commun de tout appel ; **seul endroit** où une URL est construite |
@@ -123,8 +124,8 @@ Méthodes de l'API Bot appelées : `getMe` (au démarrage), `sendChatAction`, `s
 ## Points durs, et ce qui les règle
 
 **Le jeton est dans l'URL.** L'API Bot ne s'authentifie pas par en-tête. Toute URL est donc un
-secret. `Canal` ne dérive ni `Debug` ni `Clone`, `EtatApp` ne dérive pas `Debug`, et
-`http::span_requete` ne trace ni la chaîne de requête ni les en-têtes.
+secret. `EtatApp` ne dérive pas `Debug`, et `http::span_requete` ne trace ni la chaîne de
+requête ni les en-têtes.
 
 Cela n'a pas suffi, et l'histoire vaut d'être retenue. `ErreurEnvoi::Reseau` et
 `ErreurEnvoi::Illisible` portaient chacune un `reqwest::Error` — lequel **transporte** l'URL et
@@ -141,6 +142,26 @@ porter une URL : les deux variantes ne conservent plus qu'une `Panne` classée, 
 garantit alors qu'aucun `Display`, `Debug` ou parcours de `source()` — y compris celui
 d'`ApiError::diagnostic` — ne peut en atteindre une. `tests/secrets.rs` l'éprouve sur le vrai
 chemin, contre un port fermé, pour les trois variantes.
+
+La même leçon a été appliquée une seconde fois, en amont : `Canal` a longtemps **refusé** de
+dériver `Debug` pour la même raison. Une interdiction ne couvre que ce qu'elle nomme — elle
+n'empêchait pas `format!("{:?}", canal.racine)` un cran plus bas. Les champs `racine` et
+`secret` sont désormais des [`Secret`](#le-type-secret), et `Canal` dérive `Debug` : la
+dérivation *est* le rendu masqué, ce que `tests/secrets.rs` constate en l'imprimant.
+
+### Le type `Secret`
+
+`src/secret.rs` porte une valeur qu'aucun rendu ne peut atteindre. Il n'implémente **pas**
+`Display` — `format!("{secret}")` ne compile pas — n'implémente pas `Deref<Target = str>`
+— qui laisserait `&*secret` réintroduire ce que l'absence de `Display` empêche — et son `Debug`
+rend `<masqué, N caractères>`.
+
+Lire la valeur exige `exposer()`, nommé pour être désagréable : `rg 'exposer\('` donne la liste
+exhaustive des points de sortie, ce qu'aucune `String` ne permet.
+
+La liste des champs qui en portent un n'est **pas** écrite ici : une liste manuscrite se périme,
+et celle qui figurait à cet endroit avait déjà oublié `ConfigModele::cle`, ajouté dans le même
+commit. `rg 'Secret,$'` la donne à jour.
 
 **Le proxy journalise les en-têtes.** Caddy ne caviarde d'office que `Cookie`, `Set-Cookie`,
 `Authorization` et `Proxy-Authorization`. `X-Telegram-Bot-Api-Secret-Token` n'en fait pas

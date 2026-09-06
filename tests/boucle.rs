@@ -9,16 +9,21 @@
 
 mod harnais;
 
+use compagnon::modele::double::ModeleDouble;
 use harnais::{FauxTelegram, update_privee};
 
 #[tokio::test]
-async fn un_message_prive_traverse_tout_le_circuit_et_revient_en_echo() {
+async fn un_message_prive_traverse_tout_le_circuit_et_revient_du_modele() {
     let faux = FauxTelegram::demarrer().await;
     let service = harnais::demarrer(&faux).await;
     println!("service à l'écoute sur {}", service.adresse);
-    // Condition explicite : sans âge vérifié, le worker répond le message de vérification et
-    // non l'écho. C'est le comportement voulu, et un test dédié l'éprouve.
-    service.base().verifier_age(harnais::UTILISATEUR).await;
+    // Deux conditions, chacune éprouvée par son propre test : l'âge vérifié, et un compagnon
+    // actif dont le prompt a passé la modération.
+    let compagnon = service
+        .base()
+        .prete_a_converser(harnais::UTILISATEUR, "Alix")
+        .await;
+    println!("compagnon actif : {compagnon}");
 
     let reponse = service
         .poster(&update_privee(900_001, "salut, tu fais quoi ?"))
@@ -43,15 +48,48 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_en_echo() {
     );
     let texte = envoye["text"].as_str().unwrap_or_default();
     println!("\ntexte envoyé :\n---\n{texte}\n---");
-    assert!(
-        texte.contains("salut, tu fais quoi ?"),
-        "l'écho doit reprendre le message reçu"
+    assert_eq!(
+        texte,
+        harnais::REPONSE_DU_DOUBLE,
+        "c'est le modèle qui répond, plus l'écho"
     );
 
-    // L'indication d'activité part avant la réponse : c'est ce qui donne l'illusion.
+    // Et surtout : ce que le modèle a REÇU. C'est la propriété qu'aucune assertion sur la
+    // réponse ne pourrait voir — le worker lit `prompt_systeme_genere`, celui que la modération
+    // a approuvé, au lieu de recomposer les traits.
+    let demande = service.modele().dernier_recu().expect("le modèle a été appelé");
+    println!("\nprompt système envoyé au modèle :\n---\n{}\n---", demande.prompt_systeme);
+    println!("échanges transmis : {:?}", demande.echanges.iter().map(|t| &t.texte).collect::<Vec<_>>());
+    assert!(demande.prompt_systeme.contains("Alix"), "le prompt doit être celui de CE compagnon");
+    assert_eq!(demande.echanges.len(), 1);
+    assert_eq!(demande.echanges[0].texte, "salut, tu fais quoi ?");
+
+    // Le prompt reçu est EXACTEMENT celui que la base a validé, à l'octet près.
+    let valide = service.base().prompt_valide(compagnon).await;
+    assert_eq!(demande.prompt_systeme, valide, "aucune retouche entre la base et le modèle");
+
+    // L'indication d'activité part avant la réponse : c'est ce qui donne l'illusion, et elle
+    // compte davantage qu'avant — l'écho partait en 50 ms, un modèle met des secondes.
     let actions = faux.attendre("sendChatAction", 1).await;
     println!("action affichée : {}", actions[0]["action"]);
     assert_eq!(actions[0]["action"], "typing");
+
+    // Le fil est inscrit des deux côtés : ce que la personne a écrit, et ce qui lui a répondu.
+    let echanges = service.base().messages_du_fil(harnais::UTILISATEUR).await;
+    println!("\nfil en base :");
+    for (role, contenu) in &echanges {
+        println!("  {role:12} {contenu}");
+    }
+    assert_eq!(echanges.len(), 2, "l'entrant et le sortant doivent être inscrits");
+    assert_eq!(echanges[0], ("utilisateur".to_owned(), "salut, tu fais quoi ?".to_owned()));
+    assert_eq!(echanges[1].0, "personnage");
+
+    // Et le coût est au registre, imputé à la bonne personne.
+    let lignes = service.base().registre(harnais::UTILISATEUR).await;
+    println!("\nregistre des coûts : {lignes:?}");
+    assert_eq!(lignes.len(), 1, "un appel, une ligne");
+    assert_eq!(lignes[0].0, "message");
+    assert_eq!(lignes[0].1, "ok");
 
     service.eteindre().await;
 }
@@ -156,25 +194,20 @@ async fn un_corps_illisible_est_absorbe_sans_ouvrir_de_boucle_de_rejeu() {
 #[tokio::test]
 async fn une_reponse_trop_longue_part_en_plusieurs_messages() {
     let faux = FauxTelegram::demarrer().await;
-    let service = harnais::demarrer(&faux).await;
-    service.base().verifier_age(harnais::UTILISATEUR).await;
-
-    // L'entrant est plafonné à 4096 unités UTF-16 — au-delà, il est écarté avant la file.
-    // C'est donc l'**enrobage** de la réponse qui fait franchir la limite : un message
-    // entrant juste sous le plafond produit une réponse juste au-dessus. Le cas est étroit et
-    // c'est exactement pour cela qu'il mérite un test — c'est celui qu'on n'atteint jamais à
-    // la main, et celui où Telegram rejette tout le message sans rien afficher.
-    // Construit à la taille maximale que Telegram accepte en entrée : de cette façon, le
-    // test tient quel que soit l'enrobage que les phases suivantes mettront autour de la
-    // réponse — dès qu'il est non vide, la limite sortante est franchie.
+    // Le modèle produit une réponse plus longue que ce que Telegram accepte en un message.
+    // Ce n'est plus l'enrobage de l'écho qui fait franchir la limite mais le modèle lui-même,
+    // ce qui est aussi le cas réel : rien n'empêche un modèle de rendre six mille caractères.
     let motif = "Elle repose sa tasse et te regarde sans rien dire. ";
-    let long: String = motif.chars().cycle().take(4096).collect();
+    let longue_reponse: String = motif.chars().cycle().take(6000).collect();
+    let service =
+        harnais::demarrer_avec_modele(&faux, ModeleDouble::qui_repond(&longue_reponse)).await;
+    service.base().prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     println!(
-        "message entrant : {} unités UTF-16 (plafond entrant : 4096)",
-        harnais::longueur_utf16(&long)
+        "réponse du modèle : {} unités UTF-16 (plafond sortant : 4096)",
+        harnais::longueur_utf16(&longue_reponse)
     );
 
-    let reponse = service.poster(&update_privee(900_005, &long)).await;
+    let reponse = service.poster(&update_privee(900_005, "raconte")).await;
     assert_eq!(reponse.status(), 200);
 
     let messages = faux.attendre("sendMessage", 2).await;
@@ -420,18 +453,24 @@ async fn sans_verification_d_age_le_moteur_reste_ferme() {
         "le moteur ne doit pas avoir tourné"
     );
 
-    // Puis la barrière se lève, et le même utilisateur obtient l'écho.
-    service.base().verifier_age(harnais::UTILISATEUR).await;
+    // Et le modèle n'a PAS été appelé : un refus d'âge ne doit rien coûter.
+    println!("appels au modèle : {}", service.modele().appels());
+    assert_eq!(service.modele().appels(), 0, "aucun jeton ne doit être payé pour un refus");
+
+    // Puis la barrière se lève, et le même utilisateur obtient une vraie réponse.
+    service.base().prete_a_converser(harnais::UTILISATEUR, "Alix").await;
     service
         .poster(&update_privee(960_002, "et maintenant ?"))
         .await;
     let messages = faux.attendre("sendMessage", 2).await;
     let texte = messages[1]["text"].as_str().unwrap_or_default();
     println!("après vérification :\n---\n{texte}\n---");
-    assert!(
-        texte.contains("et maintenant ?"),
+    assert_eq!(
+        texte,
+        harnais::REPONSE_DU_DOUBLE,
         "une fois l'âge vérifié, le moteur doit répondre"
     );
+    assert_eq!(service.modele().appels(), 1, "et le modèle est appelé exactement une fois");
 
     service.eteindre().await;
 }
