@@ -168,8 +168,12 @@ impl Ecart {
 pub struct Recu {
     /// Où répondre.
     pub chat_id: i64,
-    /// Qui a écrit. Clé de l'utilisateur à partir de la phase 1.
-    pub utilisateur_id: i64,
+    /// Qui a écrit, **chez Telegram**.
+    ///
+    /// Nommé pour ce qu'il est : ce n'est pas l'identité de la personne mais son adresse sur un
+    /// canal. Il ne sert qu'une fois, à l'admission, pour résoudre l'utilisateur interne — au
+    /// -delà, plus rien ne le lit.
+    pub utilisateur_telegram: i64,
     /// Le message auquel on répond, pour `reply_to_message_id` si besoin.
     pub message_id: i64,
     /// Prénom déclaré, utile au personnage dès le premier mot.
@@ -222,7 +226,7 @@ impl Update {
 
         Ok(Recu {
             chat_id: message.chat.id,
-            utilisateur_id: auteur.id,
+            utilisateur_telegram: auteur.id,
             message_id: message.message_id,
             prenom: auteur.first_name,
             texte: texte.to_owned(),
@@ -261,7 +265,7 @@ mod tests {
             .expect("ce message doit être retenu");
         println!("reçu extrait : {recu:#?}");
         assert_eq!(recu.chat_id, 42);
-        assert_eq!(recu.utilisateur_id, 42);
+        assert_eq!(recu.utilisateur_telegram, 42);
         assert_eq!(recu.message_id, 17);
         assert_eq!(recu.prenom, "Erwan");
         // Les espaces de bord sont retirés, le contenu ne l'est pas.

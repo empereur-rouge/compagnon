@@ -132,14 +132,19 @@ pub async fn creer(config: &Config, mots: &[&str]) -> Result<(), ErreurCompagnon
     let base = Base::ouvrir(config.url_base.exposer()).await?;
     let pool = base.pool();
 
-    let utilisateur: i64 = exiger(&champs, "utilisateur")?
+    // L'identifiant Telegram est gardé sous son nom : c'est celui que l'exploitant a tapé, et
+    // celui que les messages doivent lui renvoyer. L'identité interne vit à côté, elle ne
+    // s'affiche que pour l'audit.
+    let telegram: i64 = exiger(&champs, "utilisateur")?
         .parse()
         .map_err(|_| ErreurCompagnon::Usage("utilisateur= doit être un nombre".to_owned()))?;
     let nom = exiger(&champs, "nom")?;
 
     // L'utilisateur doit exister : sa clé étrangère le veut, et un compagnon sans propriétaire
-    // n'aurait personne à qui parler.
-    utilisateurs::assurer(pool, utilisateur, None).await?;
+    // n'aurait personne à qui parler. L'argument de la ligne de commande est un identifiant
+    // **Telegram** — c'est celui que l'exploitant a sous les yeux — donc il passe par la même
+    // résolution que le chemin d'entrée d'un message, jamais par un accès direct à la table.
+    let utilisateur = utilisateurs::resoudre_telegram(pool, telegram, None).await?;
 
     // Les sept écritures qui suivent sont UNE transaction, et ce n'est pas du zèle : sans elle,
     // un échec au milieu — un code d'archétype mal tapé — laissait la ligne `personnages`
@@ -187,7 +192,7 @@ pub async fn creer(config: &Config, mots: &[&str]) -> Result<(), ErreurCompagnon
             println!("compagnon créé : {personnage_id}");
             println!("modération      : acceptée");
             println!("statut          : brouillon");
-            println!("pour l'activer  : compagnon compagnon activer {utilisateur}");
+            println!("pour l'activer  : compagnon compagnon activer {telegram}");
         }
         moderation::Verdict::Refuse(motif) => {
             println!("compagnon créé : {personnage_id}");
@@ -229,12 +234,15 @@ pub async fn montrer(config: &Config, utilisateur: &str) -> Result<(), ErreurCom
 ///
 /// [`ErreurCompagnon`] si l'identifiant est illisible ou si la base refuse.
 pub async fn verifier_age(config: &Config, utilisateur: &str) -> Result<(), ErreurCompagnon> {
-    let utilisateur: i64 = utilisateur
+    let telegram: i64 = utilisateur
         .parse()
         .map_err(|_| ErreurCompagnon::Usage("l'identifiant doit être un nombre".to_owned()))?;
     let base = Base::ouvrir(config.url_base.exposer()).await?;
+    // Même résolution que le chemin d'entrée d'un message : l'exploitant tape l'identifiant
+    // Telegram, qui est celui qu'il a sous les yeux, et le service en déduit l'identité interne.
+    let utilisateur = utilisateurs::resoudre_telegram(base.pool(), telegram, None).await?;
     utilisateurs::verifier_age(base.pool(), utilisateur, "declaration").await?;
-    println!("utilisateur {utilisateur} : âge vérifié (méthode « declaration »)");
+    println!("utilisateur {telegram} (identité {utilisateur}) : âge vérifié (méthode « declaration »)");
     eprintln!(
         "note : la déclaration simple ne suffit pas dans les juridictions qui exigent une \
          vérification robuste — voir DECISIONS-MODELES et la revue légale par pays."
@@ -291,24 +299,30 @@ async fn compagnon_de(
     config: &Config,
     utilisateur: &str,
 ) -> Result<(Base, Uuid, Option<String>), ErreurCompagnon> {
-    let utilisateur: i64 = utilisateur
+    let telegram: i64 = utilisateur
         .parse()
         .map_err(|_| ErreurCompagnon::Usage("l'identifiant doit être un nombre".to_owned()))?;
     let base = Base::ouvrir(config.url_base.exposer()).await?;
 
+    // La jointure passe par le pont : c'est le seul chemin qui relie une adresse de canal à une
+    // identité, et l'écrire ici plutôt que de résoudre d'abord évite de créer un utilisateur
+    // pour une commande de lecture.
     let ligne: Option<(Uuid, Option<String>)> = sqlx::query_as(
         "select p.id, u.code_pays_declare
-           from personnages p join utilisateurs u on u.id = p.utilisateur_id
-          where p.utilisateur_id = $1 and p.supprime_le is null",
+           from personnages p
+           join utilisateurs u on u.id = p.utilisateur_id
+           join identifiants_externes ie on ie.utilisateur_id = u.id
+          where ie.canal = $1 and ie.identifiant_externe = $2 and p.supprime_le is null",
     )
-    .bind(utilisateur)
+    .bind(utilisateurs::CANAL_TELEGRAM)
+    .bind(telegram.to_string())
     .fetch_optional(base.pool())
     .await
     .map_err(ErreurBase::Requete)?;
 
     let Some((personnage_id, pays)) = ligne else {
         return Err(ErreurCompagnon::Usage(format!(
-            "l'utilisateur {utilisateur} n'a pas de compagnon"
+            "l'utilisateur {telegram} n'a pas de compagnon"
         )));
     };
     Ok((base, personnage_id, pays))

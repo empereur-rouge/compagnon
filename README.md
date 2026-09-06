@@ -80,6 +80,7 @@ compagnon webhook retirer          retire le webhook
 | ✅ | un compagnon ne peut pas s'activer sans être passé par la modération |
 | ✅ | un vrai modèle répond, avec le prompt validé, et chaque appel est costé |
 | ✅ | un prompt altéré hors processus ferme l'accès au modèle |
+| ✅ | l'identité de l'utilisateur est interne, Telegram n'est qu'un canal |
 | ⬜ | parcours de création dans Telegram — phase 1.5 |
 | ⬜ | garde-fous de sortie : les règles fixes tenues par un mécanisme — phase 1.8 |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
@@ -124,6 +125,7 @@ secondes, ferait rejouer Telegram à chaque message.
 | [Le compagnon](documentation/compagnon.md) | catalogues, prompt composé, modération |
 | [Un seul bot](documentation/un-seul-bot.md) | pourquoi un seul bot Telegram |
 | [Client modèle](documentation/client-modele.md) | l'appel au modèle, ses pannes, le registre des coûts |
+| [Identité multi-canal](documentation/identite-multi-canal.md) | UUID interne, pont vers les canaux |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |
 | [CHANGELOG.md](CHANGELOG.md) | ce qui a changé, version par version |

@@ -269,7 +269,7 @@ async fn traiter(
     // d'un compagnon actif et l'intégrité de son prompt sont désormais trois issues d'une même
     // lecture. Aucune ne peut être oubliée par un chemin futur — la phase 2 va allonger cette
     // fonction.
-    let compagnon = match dialogue::ouvrir(base.pool(), recu.utilisateur_id).await {
+    let compagnon = match dialogue::ouvrir(base.pool(), tache.utilisateur_id).await {
         Ok(Interlocuteur::Pret(compagnon)) => compagnon,
         Ok(Interlocuteur::AgeNonVerifie) => {
             tracing::info!(chat_id = recu.chat_id, "âge non vérifié, accès au moteur refusé");
@@ -337,7 +337,7 @@ async fn traiter(
             // Écrite ici, à côté des deux autres inscriptions : « un appel payé, une ligne »
             // se lit alors dans `traiter`, et non éparpillé chez les fonctions qui décident
             // d'autre chose.
-            inscrire_au_registre(base, modele, &recu, &compagnon, None, None).await;
+            inscrire_au_registre(base, modele, tache, &recu, &compagnon, None, None).await;
             return echec_du_modele(base, canal, tache, &recu, &erreur).await;
         }
     };
@@ -396,7 +396,7 @@ async fn traiter(
     // Le modèle a été payé, que Telegram accepte ou non. Écrite hors du `match`, la ligne
     // vaut pour les deux issues : un coût omis parce que l'envoi a raté est un coût qui
     // manquera dans la marge, et la reprise en produira un second.
-    inscrire_au_registre(base, modele, &recu, &compagnon, message_id, Some(&reponse)).await;
+    inscrire_au_registre(base, modele, tache, &recu, &compagnon, message_id, Some(&reponse)).await;
 
     match envoi {
         Ok(_) => {
@@ -529,6 +529,7 @@ async fn echec_du_modele(
 async fn inscrire_au_registre(
     base: &Base,
     modele: &dyn ClientModele,
+    tache: &file::Tache,
     recu: &Recu,
     compagnon: &dialogue::Compagnon,
     message_id: Option<uuid::Uuid>,
@@ -547,7 +548,7 @@ async fn inscrire_au_registre(
     };
 
     let appel = consommation::Appel {
-        utilisateur_id: recu.utilisateur_id,
+        utilisateur_id: tache.utilisateur_id,
         conversation_id: Some(compagnon.conversation_id),
         message_id,
         type_appel: consommation::TypeAppel::Message,
@@ -601,7 +602,7 @@ mod tests {
     fn recu_de(texte: &str) -> Recu {
         Recu {
             chat_id: 42,
-            utilisateur_id: 42,
+            utilisateur_telegram: 42,
             message_id: 17,
             prenom: "Erwan".to_owned(),
             texte: texte.to_owned(),
@@ -647,7 +648,7 @@ mod tests {
         println!("texte relu   : {}", apres.texte);
         assert_eq!(apres.texte, avant.texte);
         assert_eq!(apres.chat_id, avant.chat_id);
-        assert_eq!(apres.utilisateur_id, avant.utilisateur_id);
+        assert_eq!(apres.utilisateur_telegram, avant.utilisateur_telegram);
         assert_eq!(apres.message_id, avant.message_id);
     }
 

@@ -26,6 +26,7 @@ fonctionnalité a sa fiche, chaque fiche nomme le code qui la porte.
 
 | Fiche | Phase | Sujet |
 |---|---|---|
+| [[identite-multi-canal]] | 1.3 | UUID interne, pont vers les canaux, résolution à l'entrée |
 | [[client-modele]] | 1.3 | trait, appel HTTP, double de test, registre des coûts |
 | [[compagnon]] | 1.2 | catalogues, traits, prompt composé, modération |
 | [[persistance]] | 1.1 | base, file à bail, workers concurrents, vérification d'âge |
@@ -69,6 +70,9 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
   d'une réponse appartient au worker.
 - **Tout est validé au démarrage** — une faute de déploiement fait échouer le démarrage, pas le
   premier message d'un utilisateur.
+- **L'utilisateur n'est pas son compte Telegram** — `utilisateurs.id` est un UUID interne, et
+  `identifiants_externes` fait le pont. Un identifiant de canal est une **adresse**, pas une
+  identité ; il n'apparaît qu'à la résolution, à l'entrée. Voir [[identite-multi-canal]].
 - **Le prompt validé est lu, jamais recomposé** — c'est le texte que la modération a approuvé,
   et son empreinte est vérifiée avant chaque appel au modèle. Un texte altéré hors processus
   ferme l'accès au modèle. Voir [[client-modele]].

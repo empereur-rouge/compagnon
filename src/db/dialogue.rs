@@ -79,7 +79,7 @@ pub enum Interlocuteur {
 /// # Errors
 ///
 /// [`ErreurBase::Requete`] si une lecture ou l'ouverture du fil échoue.
-pub async fn ouvrir(pool: &PgPool, utilisateur_id: i64) -> Result<Interlocuteur, ErreurBase> {
+pub async fn ouvrir(pool: &PgPool, utilisateur_id: Uuid) -> Result<Interlocuteur, ErreurBase> {
     // Jointe à la même requête plutôt que demandée séparément : c'est ce qui empêche un futur
     // appelant d'ouvrir un compagnon sans avoir vérifié l'âge. Le coût est nul — la ligne est
     // déjà lue par la clé étrangère.
@@ -128,7 +128,7 @@ pub async fn ouvrir(pool: &PgPool, utilisateur_id: i64) -> Result<Interlocuteur,
 /// elle, ne passe pas par la file.
 async fn ouvrir_le_fil(
     pool: &PgPool,
-    utilisateur_id: i64,
+    utilisateur_id: Uuid,
     personnage_id: Uuid,
 ) -> Result<Uuid, ErreurBase> {
     Ok(sqlx::query_scalar(

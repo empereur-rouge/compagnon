@@ -81,7 +81,9 @@ catalogue. Le paramètre reste libre pour du parrainage.
 ## Ce que la phase 1 en tire
 
 - **Pas de table `bot`, pas de jeton par client.** Un jeton dans l'environnement, point.
-- `utilisateur` est clé sur `chat_id` — l'identifiant Telegram, stable et déjà là.
+- `utilisateur` a une identité **interne** (UUID), et son identifiant Telegram vit dans
+  `identifiants_externes`. Il l'a été, clé primaire ; ce n'était pas tenable pour un produit
+  destiné à sortir de Telegram. Voir [[identite-multi-canal]].
 - `assistant` pend de l'utilisateur, et la mémoire pend de l'assistant : voir
   [[un-assistant-par-personne]].
 - `/start` doit être traité à part dès la phase 1 : c'est le parcours de création, donc le

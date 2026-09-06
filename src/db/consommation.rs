@@ -110,7 +110,7 @@ impl Statut {
 #[derive(Debug, Clone)]
 pub struct Appel<'a> {
     /// À qui l'appel est imputé.
-    pub utilisateur_id: i64,
+    pub utilisateur_id: Uuid,
     /// La conversation concernée, si l'appel en sert une.
     pub conversation_id: Option<Uuid>,
     /// Le message produit, `None` si l'appel a échoué avant qu'un message existe.
@@ -191,7 +191,7 @@ pub async fn inscrire(pool: &PgPool, appel: &Appel<'_>) -> Result<Uuid, ErreurBa
 /// [`ErreurBase::Requete`] si la lecture échoue.
 pub async fn cout_depuis(
     pool: &PgPool,
-    utilisateur_id: i64,
+    utilisateur_id: Uuid,
     depuis: chrono::DateTime<chrono::Utc>,
 ) -> Result<Decimal, ErreurBase> {
     Ok(sqlx::query_scalar::<_, Option<Decimal>>(

@@ -5,6 +5,47 @@ Toutes les modifications notables de ce projet sont consignées ici.
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/), et le projet applique
 le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.12.0] - 2026-09-06
+
+L'identité de l'utilisateur cesse d'être celle de Telegram. Demandé par la révision de
+`SCHEMA-NOYAU.md` et par `SCHEMA-API.md` « dès la phase 1.1 » — donc rétroactivement sur du code
+déjà livré.
+
+### Changed
+
+- **change(db)** : `utilisateurs.id` devient un **UUID interne**, et `identifiants_externes` fait
+  le pont `(canal, identifiant externe) → utilisateur`. L'identifiant Telegram n'est plus une
+  identité mais une **adresse** : il n'apparaît qu'à la résolution, à l'entrée, et dans
+  `messages.identifiant_telegram`.
+- **change(db)** : `utilisateurs::assurer` devient `resoudre` / `resoudre_telegram`. La résolution
+  est idempotente sous concurrence — deux premières requêtes simultanées ne peuvent pas produire
+  deux identités, ni une erreur devant quelqu'un.
+- **change(telegram)** : `Recu::utilisateur_id` devient `Recu::utilisateur_telegram`, nommé pour
+  ce qu'il est. Il ne sert qu'une fois, à l'admission ; le worker lit l'UUID porté par la tâche.
+- **change(cli)** : la ligne de commande continue de prendre l'identifiant Telegram — c'est celui
+  que l'exploitant a sous les yeux — et passe par la même résolution que le chemin d'entrée d'un
+  message, jamais par un accès direct à la table.
+
+### Added
+
+- **feat(db)** : migration `0009_identite_multi_canal.sql`. Six clés étrangères basculées, huit
+  index recréés à l'identique, **zéro ligne perdue** : les données sont préservées par jointure et
+  non recréées. Vérifié sur une base peuplée avant migration.
+- **test(harnais)** : `BaseDeTest::identite`, `attendre_messages`, `attendre_registre`. Les tests
+  continuent de parler en identifiants Telegram — c'est ce qu'une mise à jour Telegram contient —
+  et le harnais traduit, comme le service.
+
+### Fixed
+
+- **fix(cli)** : `compagnon compagnon creer` conseillait `compagnon activer <uuid>` alors que la
+  commande attend un identifiant Telegram — l'indication n'était plus exécutable telle quelle.
+  Trouvé sur le vrai chemin, pas en test : aucun test ne lit ce que la commande imprime.
+- **fix(test)** : une course dans `boucle.rs` et `dialogue.rs`. Le worker envoie à Telegram
+  **puis** inscrit, pour qu'une ligne dans `messages` signifie « la personne l'a reçu » ; les
+  tests lisaient la base aussitôt après avoir vu partir le message, et tombaient parfois entre les
+  deux. Une passe sur quatre. Les trois politiques d'attente qui coexistaient n'en font plus
+  qu'une, dans le harnais.
+
 ## [0.11.0] - 2026-09-06
 
 Revue `/simplify` de la phase 1.3, premier volet : les garanties que la phase affirmait et ne
@@ -709,6 +750,7 @@ tous trois introduits par les deux commits de cette phase.
 
 | Version | Date | Phase |
 |---|---|---|
+| 0.12.0 | 2026-09-06 | identité multi-canal — UUID interne, pont vers les canaux |
 | 0.11.0 | 2026-09-06 | revue 1.3 — garanties mesurées, duplications supprimées |
 | 0.10.0 | 2026-09-06 | 1.3 — client modèle, registre des coûts, le compagnon répond |
 | 0.9.1 | 2026-09-05 | écritures partagées, filtre actif éprouvé |

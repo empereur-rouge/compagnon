@@ -16,17 +16,20 @@ mod harnais;
 
 use chrono::{Duration as DureeChrono, Utc};
 use compagnon::db::consommation::{self, Appel, Origine, Statut, TypeAppel};
-use compagnon::db::utilisateurs;
 use harnais::base::BaseDeTest;
 use rust_decimal::Decimal;
+use uuid::Uuid;
 
-/// L'utilisateur auquel les coûts sont imputés.
+/// L'adresse Telegram de l'utilisateur auquel les coûts sont imputés.
+///
+/// Le registre, lui, ne connaît que l'identité interne : c'est la résolution qui fait le pont,
+/// exactement comme sur le chemin d'entrée d'un message.
 const UTILISATEUR: i64 = 770_001;
 
 /// Un appel type, dont seuls le coût et le vocabulaire varient d'un test à l'autre.
-fn appel(cout_eur: Decimal) -> Appel<'static> {
+fn appel(identite: Uuid, cout_eur: Decimal) -> Appel<'static> {
     Appel {
-        utilisateur_id: UTILISATEUR,
+        utilisateur_id: identite,
         conversation_id: None,
         message_id: None,
         type_appel: TypeAppel::Message,
@@ -41,24 +44,22 @@ fn appel(cout_eur: Decimal) -> Appel<'static> {
     }
 }
 
-/// Une base migrée, avec l'utilisateur déjà inscrit.
-async fn base_prete() -> BaseDeTest {
+/// Une base migrée, et l'identité interne de l'utilisateur d'essai.
+async fn base_prete() -> (BaseDeTest, Uuid) {
     let base = BaseDeTest::creer().await;
-    utilisateurs::assurer(base.pool(), UTILISATEUR, Some("Erwan"))
-        .await
-        .expect("utilisateur inscrit");
-    base
+    let identite = base.identite(UTILISATEUR).await;
+    (base, identite)
 }
 
 #[tokio::test]
 async fn un_cout_au_millionieme_d_euro_se_relit_exact() {
-    let base = base_prete().await;
+    let (base, identite) = base_prete().await;
 
     // 0,000247 € : l'ordre de grandeur réel d'un message chez un hébergeur serverless. En
     // virgule flottante, la somme d'un million de lignes de cette taille dérive — et c'est
     // exactement la somme qu'on vient chercher dans cette table.
     let attendu = Decimal::new(247, 6);
-    let id = consommation::inscrire(base.pool(), &appel(attendu))
+    let id = consommation::inscrire(base.pool(), &appel(identite, attendu))
         .await
         .expect("ligne inscrite");
 
@@ -85,7 +86,7 @@ async fn tout_le_vocabulaire_rust_est_accepte_par_la_base() {
     // ajoutée au `check` de la migration. Elle compilerait, passerait la revue, et échouerait
     // à l'écriture — sur un chemin d'inscription de coût, c'est-à-dire là où personne ne
     // regarde avant la fin du mois.
-    let base = base_prete().await;
+    let (base, identite) = base_prete().await;
 
     let types = [
         TypeAppel::Message,
@@ -101,7 +102,7 @@ async fn tout_le_vocabulaire_rust_est_accepte_par_la_base() {
     for type_appel in types {
         for origine in origines {
             for statut in statuts {
-                let mut ligne = appel(Decimal::new(1, 6));
+                let mut ligne = appel(identite, Decimal::new(1, 6));
                 ligne.type_appel = type_appel;
                 ligne.origine = origine;
                 ligne.statut = statut;
@@ -128,8 +129,8 @@ async fn tout_le_vocabulaire_rust_est_accepte_par_la_base() {
 
 #[tokio::test]
 async fn une_ligne_de_cout_ne_se_supprime_ni_ne_se_reecrit() {
-    let base = base_prete().await;
-    let id = consommation::inscrire(base.pool(), &appel(Decimal::new(247, 6)))
+    let (base, identite) = base_prete().await;
+    let id = consommation::inscrire(base.pool(), &appel(identite, Decimal::new(247, 6)))
         .await
         .expect("ligne inscrite");
 
@@ -166,8 +167,8 @@ async fn la_purge_rgpd_detache_la_ligne_sans_perdre_le_montant() {
     // « Conserver uniquement ce que la comptabilité impose, sous forme anonymisée » : c'est la
     // seule mutation que la table admette, et elle doit rester possible — sans quoi la purge
     // n'aurait d'autre choix que de supprimer, donc de fausser la marge de la période.
-    let base = base_prete().await;
-    let id = consommation::inscrire(base.pool(), &appel(Decimal::new(247, 6)))
+    let (base, identite) = base_prete().await;
+    let id = consommation::inscrire(base.pool(), &appel(identite, Decimal::new(247, 6)))
         .await
         .expect("ligne inscrite");
 
@@ -198,7 +199,7 @@ async fn la_purge_rgpd_detache_la_ligne_sans_perdre_le_montant() {
     // Et l'utilisateur peut alors être supprimé : la clé étrangère ne le retient plus. C'est
     // la raison pour laquelle `utilisateur_id` a dû devenir nullable.
     sqlx::query("delete from utilisateurs where id = $1")
-        .bind(UTILISATEUR)
+        .bind(identite)
         .execute(base.pool())
         .await
         .expect("plus rien ne retient l'utilisateur");
@@ -217,25 +218,25 @@ async fn la_purge_rgpd_detache_la_ligne_sans_perdre_le_montant() {
 
 #[tokio::test]
 async fn le_cout_d_une_periode_se_somme_et_vaut_zero_quand_rien_n_a_ete_consomme() {
-    let base = base_prete().await;
+    let (base, identite) = base_prete().await;
     let debut = Utc::now() - DureeChrono::hours(1);
 
-    let vide = consommation::cout_depuis(base.pool(), UTILISATEUR, debut)
+    let vide = consommation::cout_depuis(base.pool(), identite, debut)
         .await
         .expect("somme lue");
     println!("avant tout appel : {vide} €");
     assert_eq!(vide, Decimal::ZERO, "« rien consommé » se lit zéro, pas absent");
 
     for montant in [Decimal::new(247, 6), Decimal::new(1_531, 6), Decimal::new(89, 6)] {
-        consommation::inscrire(base.pool(), &appel(montant))
+        consommation::inscrire(base.pool(), &appel(identite, montant))
             .await
             .expect("ligne inscrite");
     }
 
-    let total = consommation::cout_depuis(base.pool(), UTILISATEUR, debut)
+    let total = consommation::cout_depuis(base.pool(), identite, debut)
         .await
         .expect("somme lue");
-    let futur = consommation::cout_depuis(base.pool(), UTILISATEUR, Utc::now() + DureeChrono::hours(1))
+    let futur = consommation::cout_depuis(base.pool(), identite, Utc::now() + DureeChrono::hours(1))
         .await
         .expect("somme lue");
 
@@ -270,8 +271,8 @@ async fn le_registre_ne_se_vide_pas_et_aucune_ligne_ne_nait_orpheline() {
     // parcourt aucune ligne. Le second parce que la contrainte `(anonymisee_le is null) =
     // (utilisateur_id is not null)` est satisfaite par le couple inverse — elle décrit un état
     // et le registre a besoin d'une transition.
-    let base = base_prete().await;
-    consommation::inscrire(base.pool(), &appel(Decimal::new(247, 6)))
+    let (base, identite) = base_prete().await;
+    consommation::inscrire(base.pool(), &appel(identite, Decimal::new(247, 6)))
         .await
         .expect("ligne inscrite");
 

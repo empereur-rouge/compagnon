@@ -75,7 +75,13 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_du_modele() {
     assert_eq!(actions[0]["action"], "typing");
 
     // Le fil est inscrit des deux côtés : ce que la personne a écrit, et ce qui lui a répondu.
-    let echanges = service.base().messages_du_fil(harnais::UTILISATEUR).await;
+    // L'attente n'est pas du confort : le worker envoie à Telegram PUIS inscrit, pour qu'une
+    // ligne dans `messages` signifie « la personne l'a reçu ». Lire aussitôt après l'envoi
+    // tombait parfois entre les deux.
+    let echanges = service
+        .base()
+        .attendre_messages(harnais::UTILISATEUR, 2)
+        .await;
     println!("\nfil en base :");
     for (role, contenu) in &echanges {
         println!("  {role:12} {contenu}");
@@ -85,7 +91,10 @@ async fn un_message_prive_traverse_tout_le_circuit_et_revient_du_modele() {
     assert_eq!(echanges[1].0, "personnage");
 
     // Et le coût est au registre, imputé à la bonne personne.
-    let lignes = service.base().registre(harnais::UTILISATEUR).await;
+    let lignes = service
+        .base()
+        .attendre_registre(harnais::UTILISATEUR, 1)
+        .await;
     println!("\nregistre des coûts : {lignes:?}");
     assert_eq!(lignes.len(), 1, "un appel, une ligne");
     assert_eq!(lignes[0].0, "message");

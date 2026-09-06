@@ -21,22 +21,25 @@ const COMPAGNON_A: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1
 const COMPAGNON_B: Uuid = Uuid::from_u128(0x2222_2222_2222_2222_2222_2222_2222_2222);
 
 /// Deux utilisateurs, chacun avec son compagnon en brouillon.
-async fn deux_compagnons() -> (BaseDeTest, Base) {
+async fn deux_compagnons() -> (BaseDeTest, Base, Uuid, Uuid) {
     let jetable = BaseDeTest::creer().await;
     let base = Base::ouvrir(&jetable.url).await.expect("base migrée");
-    sqlx::query("insert into utilisateurs (id) values (1), (2)")
-        .execute(base.pool())
-        .await
-        .expect("utilisateurs");
+    // Deux identités distinctes, résolues depuis deux adresses Telegram : c'est ce que le test
+    // du triangle a besoin de distinguer. Les insérer en SQL brut posait des entiers dans une
+    // colonne devenue `uuid` — les tests compilaient et échouaient à l'exécution, la SQL n'étant
+    // qu'une chaîne pour le compilateur.
+    let (alice, bob) = (jetable.identite(1).await, jetable.identite(2).await);
     sqlx::query(
-        "insert into personnages (id, utilisateur_id, nom) values ($1, 1, 'Léa'), ($2, 2, 'Nour')",
+        "insert into personnages (id, utilisateur_id, nom) values ($1, $3, 'Léa'), ($2, $4, 'Nour')",
     )
     .bind(COMPAGNON_A)
     .bind(COMPAGNON_B)
+    .bind(alice)
+    .bind(bob)
     .execute(base.pool())
     .await
     .expect("compagnons");
-    (jetable, base)
+    (jetable, base, alice, bob)
 }
 
 /// Pose un archétype sur un compagnon, par le SQL brut.
@@ -67,7 +70,7 @@ async fn poser_archetype(
 
 #[tokio::test]
 async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
 
     // C'est la dernière garantie avant qu'un compagnon ne se mette à parler : elle porte tout
     // ce que la modération aura décidé. La spécification la disait « vérifiable par une requête
@@ -143,7 +146,7 @@ async fn un_compagnon_ne_peut_pas_s_activer_sans_prompt_valide() {
 
 #[tokio::test]
 async fn la_personnalite_reste_dans_ses_bornes() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
 
     // Un principal obligatoire, jusqu'à deux secondaires : les bornes du document, tenues à
     // l'écriture. La résolution du prompt lit cette forme et n'a pas de branche pour une autre.
@@ -211,15 +214,16 @@ async fn la_personnalite_reste_dans_ses_bornes() {
 
 #[tokio::test]
 async fn une_conversation_ne_peut_pas_pointer_le_compagnon_d_un_autre() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, alice, _bob) = deux_compagnons().await;
 
     // Trois index uniques garantissaient trois bornes indépendantes, et aucun ne garantissait
     // que la conversation d'un utilisateur pointe SON compagnon : les deux clés étrangères de
     // `conversations` étaient disjointes. Sur un produit intime, c'est le chemin par lequel la
     // mémoire de quelqu'un atterrirait chez un autre.
     let croisee =
-        sqlx::query("insert into conversations (utilisateur_id, personnage_id) values (1, $1)")
+        sqlx::query("insert into conversations (utilisateur_id, personnage_id) values ($2, $1)")
             .bind(COMPAGNON_B)
+            .bind(alice)
             .execute(base.pool())
             .await;
     println!(
@@ -235,8 +239,9 @@ async fn une_conversation_ne_peut_pas_pointer_le_compagnon_d_un_autre() {
         "le triangle est ouvert : une conversation peut croiser deux comptes"
     );
 
-    sqlx::query("insert into conversations (utilisateur_id, personnage_id) values (1, $1)")
+    sqlx::query("insert into conversations (utilisateur_id, personnage_id) values ($2, $1)")
         .bind(COMPAGNON_A)
+        .bind(alice)
         .execute(base.pool())
         .await
         .expect("la conversation légitime doit passer");
@@ -247,7 +252,7 @@ async fn une_conversation_ne_peut_pas_pointer_le_compagnon_d_un_autre() {
 
 #[tokio::test]
 async fn les_bornes_de_forme_des_parametres_sont_tenues() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
 
     // Un curseur hors [0,1] fausserait la résolution des plafonds sans qu'aucun code ne s'en
     // aperçoive : `least(1.4, plafond)` rend le plafond, donc la valeur aberrante passerait
@@ -327,7 +332,7 @@ async fn compagnon_complet(pool: &PgPool, id: Uuid, curseurs: &[(&str, &str)]) {
 
 #[tokio::test]
 async fn un_compagnon_en_base_compose_son_prompt_avec_sa_fusion() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
     compagnon_complet(
         base.pool(),
         COMPAGNON_A,
@@ -373,7 +378,7 @@ async fn un_compagnon_en_base_compose_son_prompt_avec_sa_fusion() {
 
 #[tokio::test]
 async fn un_plafond_ne_s_applique_qu_aux_curseurs_declares_plafonnables() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
     compagnon_complet(base.pool(), COMPAGNON_A, &[("affection", "0.90")]).await;
 
     // C'est la règle que la version précédente de ce test avait à l'envers : elle posait le
@@ -462,7 +467,7 @@ fn extraire_ligne(texte: &str, code: &str) -> String {
 
 #[tokio::test]
 async fn la_moderation_ouvre_ou_ferme_le_verrou_d_activation() {
-    let (jetable, base) = deux_compagnons().await;
+    let (jetable, base, _alice, _bob) = deux_compagnons().await;
     compagnon_complet(base.pool(), COMPAGNON_A, &[("humour", "0.60")]).await;
     compagnon_complet(base.pool(), COMPAGNON_B, &[("humour", "0.60")]).await;
 
