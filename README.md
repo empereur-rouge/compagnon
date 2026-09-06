@@ -5,10 +5,12 @@ nomme, définit sa personnalité, choisit son apparence et sa voix — et le ser
 mémoire de cette relation, lui rendant une voix, un visage et une continuité. Un seul bot
 Telegram sert tout le monde ; l'assistant, lui, appartient à chacun.
 
-**État : phase 0.** La boucle de transport, et rien d'autre. Telegram appelle le webhook, le
-service authentifie, extrait, met en file, répond en écho. Pas de base, pas de modèle, pas de
-personnage — c'est délibéré : le transport est prouvé avant qu'une décision produit ne repose
-dessus.
+**État : phase 1.3.** Le circuit complet d'un message. Telegram appelle le webhook, le service
+authentifie, met en file, et un worker lit le compagnon de la personne, envoie son prompt
+**validé** à un modèle de langue, renvoie la réponse, inscrit le fil et le coût de l'appel.
+
+Ce qui manque encore : la création d'un compagnon depuis Telegram — elle passe par la ligne de
+commande — la mémoire d'une conversation à l'autre, et les garde-fous de sortie.
 
 ## Éprouver le bot en cinq minutes, sans rien déployer
 
@@ -76,13 +78,17 @@ compagnon webhook retirer          retire le webhook
 | ✅ | vérification d'âge exigée avant tout accès au moteur |
 | ✅ | le prompt système est **composé**, jamais saisi — la sûreté est structurelle |
 | ✅ | un compagnon ne peut pas s'activer sans être passé par la modération |
-| ⬜ | moteur de dialogue, parcours de création dans Telegram — phase 1.3+ |
+| ✅ | un vrai modèle répond, avec le prompt validé, et chaque appel est costé |
+| ✅ | un prompt altéré hors processus ferme l'accès au modèle |
+| ⬜ | parcours de création dans Telegram — phase 1.5 |
+| ⬜ | garde-fous de sortie : les règles fixes tenues par un mécanisme — phase 1.8 |
 | ⬜ | mémoire : journal roulant, souvenirs, état de relation — phase 2 |
 | ⬜ | photos, audio, vidéo — phases 3 à 6 |
 
-**Limite connue de la phase 0** : la file vit en mémoire. Une extinction *ordonnée* la vide
-entièrement ; un `kill -9` ou une panne de courant perd ce qu'elle contient. La phase 1 la
-remplace par une file en base à bail, sur le modèle de celle d'`agentbot`.
+**Limite connue, mesurée** : le modèle n'obéit pas toujours aux règles fixes de son prompt. Sur
+le premier essai de bout en bout, le compagnon a commenté une absence — ce que la règle 4
+interdit explicitement, et qui figurait dans le texte qu'il avait sous les yeux. Un prompt n'est
+pas un mécanisme : c'est l'objet des garde-fous de sortie de la phase 1.8.
 
 ## Décisions structurantes
 
@@ -117,6 +123,7 @@ secondes, ferait rejouer Telegram à chaque message.
 | [Persistance](documentation/persistance.md) | base, file à bail, concurrence |
 | [Le compagnon](documentation/compagnon.md) | catalogues, prompt composé, modération |
 | [Un seul bot](documentation/un-seul-bot.md) | pourquoi un seul bot Telegram |
+| [Client modèle](documentation/client-modele.md) | l'appel au modèle, ses pannes, le registre des coûts |
 | [Transport Telegram](documentation/transport-telegram.md) | la fiche de la phase 0 |
 | [journey-map.html](journey-map.html) | les parcours utilisateur et le code qui les sert |
 | [CHANGELOG.md](CHANGELOG.md) | ce qui a changé, version par version |

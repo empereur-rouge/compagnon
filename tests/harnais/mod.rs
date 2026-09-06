@@ -17,16 +17,24 @@
 //!
 //! # Ce que ce harnais devra devenir
 //!
-//! Les phases suivantes y ajouteront des façades : le fournisseur de modèle (phase 1), le
-//! moteur d'images (phase 5). Elles se montent ici, à côté de [`FauxTelegram`], pour que chaque
-//! test reste une conversation lisible plutôt qu'un montage.
+//! Le fournisseur de modèle est la seconde façade, arrivée en phase 1.3 : ce n'est pas un
+//! serveur HTTP mais un [`ModeleDouble`], injecté dans le service au démarrage. Le trait
+//! `ClientModele` existe d'abord pour ça — un test peut faire expirer le modèle, le faire
+//! refuser, ou le faire répondre à contretemps, ce qu'aucun vrai fournisseur ne consent à faire
+//! sur demande.
+//!
+//! Le moteur d'images (phase 5) se montera au même endroit, pour que chaque test reste une
+//! conversation lisible plutôt qu'un montage.
 
 #![allow(dead_code, clippy::expect_used, clippy::panic)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use compagnon::app::{self, Prepare};
 use compagnon::config::Config;
+use compagnon::modele::ClientModele;
+use compagnon::modele::double::ModeleDouble;
 pub mod base;
 
 use base::BaseDeTest;
@@ -262,6 +270,8 @@ impl FauxTelegram {
 pub struct EnMarche {
     /// La base jetable de ce test, détruite par [`EnMarche::eteindre`].
     base: BaseDeTest,
+    /// Le double de modèle, gardé pour que le test puisse relire ce qui lui a été demandé.
+    modele: Arc<ModeleDouble>,
     /// L'adresse réellement obtenue.
     pub adresse: std::net::SocketAddr,
     client: reqwest::Client,
@@ -269,12 +279,27 @@ pub struct EnMarche {
     tache: JoinHandle<()>,
 }
 
+/// La réponse que rend le double par défaut.
+///
+/// Reconnaissable à dessein : un test qui la voit arriver sait qu'elle vient du modèle et non
+/// d'un message de service.
+pub const REPONSE_DU_DOUBLE: &str = "Coucou, je suis là.";
+
 /// Démarre le service contre un faux Telegram, et rend de quoi lui parler.
 pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
     // Une base neuve par test : le service y appliquera lui-même ses migrations, exactement
     // comme en production. Le test n'a donc pas à connaître le schéma.
     let base = BaseDeTest::creer().await;
-    lancer_sur(faux, base).await
+    lancer_sur(faux, base, ModeleDouble::qui_repond(REPONSE_DU_DOUBLE)).await
+}
+
+/// Démarre le service avec un double qui joue le scénario donné.
+///
+/// C'est par là qu'on éprouve ce que le service fait d'un modèle qui expire ou qui refuse —
+/// des situations qui, en production, n'arrivent qu'au pire moment et jamais en test.
+pub async fn demarrer_avec_modele(faux: &FauxTelegram, modele: ModeleDouble) -> EnMarche {
+    let base = BaseDeTest::creer().await;
+    lancer_sur(faux, base, modele).await
 }
 
 /// Démarre un service sur une base **existante**, avec ce qu'elle contient déjà.
@@ -283,12 +308,25 @@ pub async fn demarrer(faux: &FauxTelegram) -> EnMarche {
 /// base, et elle ne se vérifie qu'en faisant repartir un second service sur les restes du
 /// premier.
 pub async fn reprendre(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
-    lancer_sur(faux, base).await
+    lancer_sur(faux, base, ModeleDouble::qui_repond(REPONSE_DU_DOUBLE)).await
 }
 
-async fn lancer_sur(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
+/// Comme [`reprendre`], avec un double choisi.
+///
+/// Le second service d'un test de survie doit souvent jouer le même scénario que le premier :
+/// sans cela, la réponse qui prouve la reprise n'est plus reconnaissable.
+pub async fn reprendre_avec_modele(
+    faux: &FauxTelegram,
+    base: BaseDeTest,
+    modele: ModeleDouble,
+) -> EnMarche {
+    lancer_sur(faux, base, modele).await
+}
+
+async fn lancer_sur(faux: &FauxTelegram, base: BaseDeTest, modele: ModeleDouble) -> EnMarche {
     let config = faux.config(&base.url);
-    let prepare: Prepare = app::preparer(&config)
+    let modele = Arc::new(modele);
+    let prepare: Prepare = app::preparer(&config, Arc::clone(&modele) as Arc<dyn ClientModele>)
         .await
         .expect("le service doit démarrer contre le faux Telegram");
 
@@ -315,6 +353,7 @@ async fn lancer_sur(faux: &FauxTelegram, base: BaseDeTest) -> EnMarche {
 
     EnMarche {
         base,
+        modele,
         adresse: adresse_servie,
         client,
         arret,
@@ -343,6 +382,16 @@ async fn attendre_ecoute(client: &reqwest::Client, adresse: std::net::SocketAddr
 pub use compagnon::telegram::envoi::longueur_utf16;
 
 impl EnMarche {
+    /// Le double de modèle de ce service.
+    ///
+    /// Exposé pour que le test puisse vérifier **ce qui a été demandé au modèle** — notamment
+    /// que le prompt système envoyé est bien celui que la modération a validé, et non une
+    /// recomposition. C'est une propriété qu'aucune assertion sur la réponse ne pourrait voir.
+    #[must_use]
+    pub fn modele(&self) -> &ModeleDouble {
+        &self.modele
+    }
+
     /// Poste une mise à jour sur le webhook, avec le bon secret.
     pub async fn poster(&self, update: &Value) -> reqwest::Response {
         self.poster_avec_secret(update, SECRET).await

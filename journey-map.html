@@ -990,8 +990,8 @@
               "doing": "Regarde l'en-tête de la discussion pendant que la réponse se prépare.",
               "thinking": "[Assumption] Il a reçu, il rédige.",
               "feeling": 4,
-              "pain": "[Assumption] En phase 0 l'indication et la réponse partent quasi simultanément : l'effet ne se voit pas. Et si sendChatAction échoue, l'échec est silencieux — c'est voulu, mais rien ne le mesure.",
-              "opportunity": "[Assumption] Dès qu'un modèle produira la réponse, tenir l'indication pendant toute la génération et la rafraîchir toutes les cinq secondes — Telegram l'efface passé ce délai.",
+              "pain": "L'attente est désormais réelle : neuf secondes mesurées sur un modèle de 24 milliards de paramètres, contre cinquante millisecondes pour l'écho de la phase 0. L'indication « en train d'écrire… » est tout ce que la personne voit pendant ce temps, et Telegram l'efface au bout de cinq secondes.",
+              "opportunity": "[Assumption] Renvoyer sendChatAction toutes les quatre secondes tant que le modèle génère, plutôt qu'une seule fois avant l'appel.",
               "evidence": "",
               "frontstage": "« est en train d'écrire… » sous le nom du bot.",
               "backstage": "worker::traiter appelle Canal::action(Typing) et ignore l'erreur : une indication non affichée ne doit pas empêcher la réponse.",
@@ -1004,16 +1004,42 @@
           "moments": [
             {
               "id": "recevoir-echo",
-              "title": "Reçoit un écho, pas un personnage",
-              "doing": "Lit la réponse : son propre message entre guillemets, suivi d'une note disant que c'est un écho de phase 0.",
-              "thinking": "[Assumption] Ah — ce n'est pas encore fini. Au moins il me le dit.",
-              "feeling": 2,
-              "pain": "[Assumption] Sans age_verifie_le, l'utilisateur reçoit un message de vérification et non l'écho — honnête, mais rien dans Telegram ne permet encore de la poser : elle se fait par « compagnon utilisateur age », donc par le support.",
-              "opportunity": "[Assumption] Tant que la phase 1 n'est pas là, réserver le bot à un cercle fermé plutôt que de laisser un écho public déprécier la première impression — elle ne se rejoue pas. L'assistant que l'utilisateur vient créer est censé être le sien ; un écho anonyme est l'exact contraire de la promesse.",
+              "title": "Reçoit la réponse de son assistant",
+              "doing": "Lit ce que son assistant lui répond — un texte composé par un modèle de langue à partir du prompt que la modération a validé pour CE compagnon.",
+              "thinking": "[Assumption] Il m'a répondu comme quelqu'un, pas comme un formulaire.",
+              "feeling": 4,
+              "pain": "Le modèle n'obéit pas toujours aux règles fixes de son prompt : mesuré au premier essai de bout en bout, l'assistant a commenté une absence — « il y a eu un petit hiatus là » — alors que la règle 4 le lui interdit explicitement, dans le texte qu'il avait sous les yeux.",
+              "opportunity": "Les garde-fous de sortie de la phase 1.8 : une règle tenue par un mécanisme qui relit la réponse, et non par une phrase dans le prompt.",
               "evidence": "",
-              "frontstage": "« <votre message> » suivi de « (écho — phase 0 : le transport fonctionne, aucun personnage n'est encore branché) ».",
-              "backstage": "Un des quatre workers prend la tâche en base (bail de 120 s), vérifie age_verifie_le, envoie sendChatAction puis sendMessage, et clôt la tâche. Un envoi refusé la remet en file jusqu'à trois tentatives. L'ordre dans une conversation est tenu par la requête de prise, pas par le worker.",
-              "support": "src/worker.rs repondre, src/telegram/mod.rs envoyer_texte ; API Bot sendMessage."
+              "frontstage": "Le message reçu dans Telegram, découpé en plusieurs envois si le modèle dépasse 4096 unités UTF-16.",
+              "backstage": "worker::traiter lit le compagnon actif (db::dialogue::ouvrir), vérifie l'empreinte du prompt, appelle ClientModele::repondre, envoie, inscrit le message sortant et la ligne de coût. Mesuré sur un 24B : 9,2 s, 471 jetons d'entrée, 52 de sortie, 0,000088 €.",
+              "support": "src/worker.rs, src/db/dialogue.rs, src/modele/http.rs, src/db/consommation.rs."
+            },
+            {
+              "id": "sans-assistant",
+              "title": "Écrit alors qu'il n'a pas encore d'assistant",
+              "doing": "Envoie un message avant qu'un assistant ait été créé pour lui, et reçoit un message qui le dit.",
+              "thinking": "[Assumption] Comment j'en crée un, alors ?",
+              "feeling": 2,
+              "pain": "Le message dit qu'il n'a pas d'assistant et que la création n'est pas encore ouverte depuis Telegram — c'est-à-dire qu'il n'a rien à faire pour avancer. C'est un cul-de-sac tant que la phase 1.5 n'existe pas.",
+              "opportunity": "La phase 1.5 remplace ce message par le parcours de création lui-même. C'est le seul moment où l'attention de la personne est acquise.",
+              "evidence": "",
+              "frontstage": "« Tu n'as pas encore d'assistant. La création n'est pas encore ouverte depuis Telegram — elle arrive. »",
+              "backstage": "db::dialogue::ouvrir rend Interlocuteur::Aucun ; worker::conclure envoie et clôt la tâche. Le modèle n'est PAS appelé : rien n'est facturé pour quelqu'un qui n'a personne à qui parler.",
+              "support": "src/db/dialogue.rs, src/worker.rs."
+            },
+            {
+              "id": "assistant-indisponible",
+              "title": "Son assistant ne répond pas",
+              "doing": "Reçoit « Je n'arrive pas à répondre pour le moment. Réessaie dans un instant. » au lieu d'une réponse.",
+              "thinking": "[Assumption] Il est cassé ? Je réessaie quand ?",
+              "feeling": 1,
+              "pain": "[Assumption] Le message ne dit pas combien de temps attendre, et une panne prolongée le répète à l'identique à chaque tentative.",
+              "opportunity": "[Assumption] Distinguer une panne brève d'une panne longue, et proposer d'être prévenu au retour plutôt que de laisser réessayer à l'aveugle.",
+              "evidence": "",
+              "frontstage": "Un message neutre, qui ne joue pas le personnage : faire dire « je suis fatiguée » à l'assistant pour masquer une panne serait un mensonge, et le produit repose sur ce que la personne croit de lui. Aucun vocabulaire interne — ni code, ni nom de fournisseur.",
+              "backstage": "Le modèle a échoué. ErreurModele::merite_une_reprise décide : une panne passagère est remise en file (trois tentatives), une clé invalide ou un prompt altéré n'en consomme aucune. Quand il n'en reste plus, la personne est prévenue — un silence serait indiscernable d'un bot mort.",
+              "support": "src/worker.rs (echec_du_modele), src/modele/mod.rs."
             }
           ]
         }

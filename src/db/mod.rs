@@ -17,6 +17,7 @@
 
 pub mod catalogues;
 pub mod consommation;
+pub mod dialogue;
 pub mod file;
 pub mod personnages;
 pub mod utilisateurs;

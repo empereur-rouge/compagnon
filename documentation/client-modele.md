@@ -118,6 +118,58 @@ non attribuée.
 `cout_fournisseur_eur` est un `numeric(10,6)`, lu en `rust_decimal::Decimal` : les coûts unitaires
 sont de l'ordre du millième d'euro, et c'est la somme d'un million de lignes qu'on vient chercher.
 
+## Le chemin d'un message, en phase 1.3
+
+```text
+webhook ──► file_messages ──► worker
+                                │
+                                ├─ âge non vérifié ─────────────► message de service, tâche close
+                                ├─ aucun compagnon actif ───────► message de service, tâche close
+                                ├─ prompt ≠ son empreinte ──────► message de service, AUCUN appel
+                                │
+                                ├─ inscrit le message entrant   (avant l'appel : le perdre serait pire)
+                                ├─ « en train d'écrire… »
+                                ├─ appelle le modèle
+                                │     ├─ échec rejouable + tentatives restantes ─► remise en file
+                                │     └─ sinon ──► prévient la personne, tâche close
+                                ├─ envoie la réponse
+                                ├─ inscrit le message sortant
+                                └─ inscrit la ligne de coût
+```
+
+Trois refus partagent le même épilogue — envoyer, journaliser, clore — dans une seule fonction :
+écrit trois fois, il aurait divergé trois fois, et c'est sur ces chemins-là, les moins
+parcourus, qu'une divergence ne se voit pas. L'**envoi** de ces messages est repris comme
+n'importe quel autre : une coupure réseau ne doit pas faire disparaître le seul message qui
+distingue un refus d'une panne.
+
+**Le prompt est vérifié avant chaque appel.** `db::dialogue::ouvrir` recalcule l'empreinte
+`sha256` du prompt stocké et refuse d'appeler le modèle si elle ne correspond plus. Le coût est
+invisible devant une seconde de génération, et c'est ce qui donne un sens à l'approbation de la
+modération : sans lui, un `update` en console suffit à faire parler le compagnon avec un texte
+que personne n'a validé. Éprouvé sur le vrai chemin — service réel, base réelle, console `psql` —
+le modèle n'est pas appelé et rien n'est facturé.
+
+Cette vérification ne remplace pas `personnage::verifier_integrite`, qui **recompose** depuis les
+traits et attrape la dérive éditoriale : c'en est la moitié qu'on peut payer à chaque message.
+
+**Pas de reprise en double.** La file borne déjà les tentatives et les persiste ; le worker s'en
+sert avec `merite_une_reprise` pour décider s'il faut les consommer. Une clé invalide échoue en
+un appel, un délai dépassé en trois. Quand elles sont épuisées, la personne est prévenue — un
+silence serait indiscernable d'un bot mort.
+
+## Ce qui reste à faire, et qui a été mesuré
+
+**Le modèle n'obéit pas toujours aux règles fixes.** Sur le premier essai de bout en bout, à un
+message disant « on ne s'est pas parlé depuis des semaines », Alix a répondu « il y a eu un petit
+hiatus là » — c'est-à-dire un commentaire sur l'absence, que la **règle fixe 4 interdit
+explicitement** et qui figurait dans son prompt. Un prompt n'est pas un mécanisme : les garde-fous
+de sortie de la phase 1.8 sont ce qui rendra cette règle tenue plutôt qu'énoncée.
+
+**L'historique n'est pas encore transmis.** `ContexteConversation::echanges` ne porte que le
+message courant : la mémoire est la phase 2. Le champ existe déjà pour que son arrivée ne change
+aucune signature.
+
 ## Interactions
 
 [[persistance]] — la file à bail porte la reprise. [[transport-telegram]] — le type `Secret` et

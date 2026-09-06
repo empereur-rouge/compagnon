@@ -10,16 +10,21 @@
 //!
 //! # Ce qui existe aujourd'hui
 //!
-//! La boucle nue, et rien d'autre : Telegram appelle le webhook, le service authentifie
-//! l'appel, extrait le message, et répond en écho. Pas de base, pas de modèle, pas de
-//! personnage. L'objet de cette phase est de **prouver le transport de bout en bout** — TLS,
-//! secret partagé, découpage des messages, extinction propre — avant qu'une seule décision
-//! produit ne repose dessus.
+//! Le circuit complet d'un message, jusqu'au modèle et retour. Telegram appelle le webhook (ou
+//! le service scrute), le service authentifie, met en file, et un worker lit le compagnon de la
+//! personne, envoie son prompt **validé** au modèle, renvoie la réponse, inscrit le fil et le
+//! coût de l'appel.
 //!
-//! Les phases suivantes remplacent l'écho, pas le transport :
+//! L'écho de la phase 0 a disparu. Ce qui l'a remplacé tient à trois refus explicites, chacun
+//! avec son message : sans âge vérifié, sans compagnon actif, ou avec un prompt dont l'empreinte
+//! ne correspond plus, **le modèle n'est pas appelé**.
+//!
+//! Les phases suivantes ajoutent, elles ne remplacent plus :
 //!
 //! ```text
-//! phase 1   base + modération + création d'assistant + moteur de dialogue
+//! phase 1.5 création d'un compagnon depuis Telegram, sans ligne de commande
+//! phase 1.6 abonnements et quotas, assis sur le registre de coûts déjà rempli
+//! phase 1.8 garde-fous de sortie — les règles fixes tenues par un mécanisme, pas par un prompt
 //! phase 2   mémoire (journal roulant, souvenirs structurés, état de relation)
 //! phase 3   photos — file de génération à bail, cache de `file_id`
 //! phase 4   audio — synthèse vocale sortante, transcription entrante
@@ -38,7 +43,7 @@
 //! | [`error`] | codes d'erreur numériques stables de la surface HTTP |
 //! | [`horloge`] | temps, en un seul endroit, pour que les tests puissent le figer |
 //! | [`admission`] | ce qu'on retient d'une mise à jour, quelle que soit la porte |
-//! | [`db`] | PostgreSQL : connexion, migrations, file à bail |
+//! | [`db`] | PostgreSQL : connexion, migrations, file à bail, dialogue, registre des coûts |
 //! | [`personnage`] | les traits d un compagnon, et le prompt qu ils composent |
 //! | [`http`] | routeur, état partagé, sonde de santé |
 //! | [`modele`] | le moteur qui écrit les réponses, et son double de test |

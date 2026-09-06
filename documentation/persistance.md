@@ -14,8 +14,8 @@ savait rien d'un utilisateur entre deux messages. Cette phase met PostgreSQL sou
 remplace la file par une table **à bail**, et fait consommer **quatre workers en parallèle** au
 lieu d'un seul.
 
-Le bot répond toujours en écho. Rien de ce qui suit ne change ce qu'il dit — cette phase change
-ce qui survit, et ce qui avance en même temps.
+Cette phase ne change pas ce que le bot dit — elle change ce qui survit, et ce qui avance en
+même temps. Ce qu'il dit vient du modèle depuis la phase 1.3 : voir [[client-modele]].
 
 ## Ce que ça règle, et pourquoi maintenant
 
@@ -25,8 +25,9 @@ Deux limites, dont une qui n'était pas encore visible.
 ne survit pas au processus qui la porte.
 
 **Le sérialisme** ne se voyait pas encore. Traiter un message à la fois donnait l'ordre
-gratuitement, et un écho coûte cinquante millisecondes. Dès que la réponse coûtera un appel de
-modèle — deux à cinq secondes —, ce même sérialisme fait attendre la centième personne d'une
+gratuitement, et un écho coûte cinquante millisecondes. Le pari est désormais mesuré : un appel
+de modèle prend **neuf secondes** de bout en bout sur un 24B. À ce prix, le sérialisme ferait
+attendre la centième personne d'une
 rafale pendant cinq minutes. Sans erreur, sans journal alarmant : le bot paraît simplement mort.
 Le corriger après coup aurait demandé de reprendre la file ; le corriger maintenant ne coûte que
 la requête de prise.

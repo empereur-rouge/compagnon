@@ -48,8 +48,28 @@ Phase 1.3a — le contrat du moteur de dialogue, avant tout appel réel.
   `tout_le_vocabulaire_rust_est_accepte_par_la_base`, qui écrit les 45 combinaisons de
   `type` × `origine` × `statut` et attrape une variante ajoutée d'un seul côté.
 
+- **feat(worker)** : le worker appelle le modèle à la place de l'écho. Il lit le compagnon actif,
+  **vérifie l'empreinte** de son prompt validé, appelle, envoie, inscrit le fil et la ligne de
+  coût. Trois refus n'appellent jamais le modèle : âge non vérifié, aucun compagnon actif,
+  prompt altéré hors processus.
+- **feat(db)** : `db::dialogue` — le compagnon actif, son prompt validé, l'ouverture du fil et
+  l'inscription des messages. Le prompt est **lu** et non recomposé : c'est huit lectures de
+  moins par message, et surtout c'est le texte que la modération a approuvé.
+- **feat(app)** : `preparer`, `servir` et `scruter` reçoivent le client de modèle au lieu de le
+  construire. C'est ce qui permet aux tests d'injecter un double et d'éprouver le service entier
+  face à un fournisseur qui expire, refuse, ou ne rend rien.
+- **test** : `tests/dialogue.rs` — cinq situations de panne éprouvées de bout en bout, dont
+  `un_prompt_altere_hors_processus_ferme_l_acces_au_modele`. Vérifié aussi sur le **vrai chemin**
+  (service réel, PostgreSQL réel, Mistral 24B réel, console `psql` pour l'altération) : le modèle
+  n'est pas appelé, le code d'erreur journalisé est `9001`, et rien n'est facturé.
+- **test(harnais)** : `BaseDeTest::compagnon_actif` — une fabrique unique, sur le chemin de
+  production. Trois fabriques manuscrites avaient coexisté, dont deux déjà divergentes.
+
 ### Fixed
 
+- **fix(worker)** : un message de service — âge non vérifié, aucun compagnon, indisponibilité —
+  dont l'envoi échouait clôturait quand même la tâche, perdant silencieusement le seul message
+  qui distingue un refus d'une panne. Son envoi est désormais repris comme n'importe quel autre.
 - **fix(modele)** : un fournisseur qui répond **`200 OK`** avec `{"error": …}` était lu comme une
   génération vide, donc comme un incident passager, donc rejoué. Constaté sur un vrai serveur :
   c'est ce qu'il rend sur un chemin inexistant, là où un faux serveur aurait rendu `404`. Une URL

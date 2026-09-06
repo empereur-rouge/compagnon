@@ -69,6 +69,9 @@ Chaque phase ajoute sa fiche ici. Les intitulés sont fixés d'avance pour que l
   d'une réponse appartient au worker.
 - **Tout est validé au démarrage** — une faute de déploiement fait échouer le démarrage, pas le
   premier message d'un utilisateur.
+- **Le prompt validé est lu, jamais recomposé** — c'est le texte que la modération a approuvé,
+  et son empreinte est vérifiée avant chaque appel au modèle. Un texte altéré hors processus
+  ferme l'accès au modèle. Voir [[client-modele]].
 - **Un secret est un type, pas une consigne** — `Secret` n'a pas de `Display`, donc
   `format!("{secret}")` ne compile pas. La règle avait déjà échoué deux fois en tant que
   commentaire. Voir [[transport-telegram]].

@@ -36,6 +36,8 @@ pub enum Acte {
     Repondre(String),
     /// Rendre ce texte après avoir attendu — pour éprouver un délai côté appelant.
     RepondreApres(String, Duration),
+    /// Rendre le dernier message reçu, pour que chaque réponse soit distinguable.
+    Repeter,
     /// Échouer de cette façon.
     Echouer(ErreurModeleClonable),
 }
@@ -84,6 +86,16 @@ impl ModeleDouble {
     #[must_use]
     pub fn qui_repond(texte: &str) -> Self {
         Self::qui_joue(vec![Acte::Repondre(texte.to_owned())])
+    }
+
+    /// Un double qui **répète** le dernier message reçu.
+    ///
+    /// Sert aux tests qui ont besoin de distinguer les réponses les unes des autres — celui de
+    /// l'ordre dans une conversation, notamment : avec une réponse constante, rien ne permet
+    /// d'observer que le troisième message a bien été traité après le deuxième.
+    #[must_use]
+    pub fn qui_repete() -> Self {
+        Self::qui_joue(vec![Acte::Repeter])
     }
 
     /// Un double qui échoue toujours de la même façon.
@@ -149,6 +161,13 @@ impl ClientModele for ModeleDouble {
         Box::pin(async move {
             let (texte, duree) = match acte {
                 Acte::Repondre(texte) => (texte, Duration::ZERO),
+                Acte::Repeter => (
+                    contexte
+                        .echanges
+                        .last()
+                        .map_or_else(|| "(rien à répéter)".to_owned(), |tour| tour.texte.clone()),
+                    Duration::ZERO,
+                ),
                 Acte::RepondreApres(texte, attente) => {
                     tokio::time::sleep(attente).await;
                     (texte, attente)

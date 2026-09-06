@@ -18,7 +18,11 @@
 //! compagnon webhook retirer          retire le webhook
 //! ```
 
+use std::sync::Arc;
+
 use compagnon::config::Config;
+use compagnon::modele::ClientModele;
+use compagnon::modele::http::{ClientHttp, ConfigModele};
 use compagnon::{VERSION, app, cli, cli_compagnon, cli_modele, telemetry};
 
 /// Code de sortie quand le service refuse de démarrer, ou qu'une commande échoue.
@@ -122,6 +126,38 @@ async fn main() {
     }
 }
 
+/// Construit le client de modèle, ou sort en nommant ce qui manque.
+///
+/// Séparé de [`config_ou_sortir`] parce que les deux configurations n'ont pas la même portée :
+/// les commandes d'exploitation — sonde, webhook — n'ont aucune raison d'exiger une clé de
+/// fournisseur, et la leur imposer bloquerait un diagnostic au moment où on en a besoin.
+///
+/// En revanche, `servir` et `ecouter` l'exigent, et l'exigent **au démarrage**. Un service qui
+/// part sans modèle ne se découvre qu'au premier message, c'est-à-dire devant quelqu'un.
+fn modele_ou_sortir() -> Arc<dyn ClientModele> {
+    let config = match ConfigModele::depuis_environnement() {
+        Ok(config) => config,
+        Err(erreur) => {
+            tracing::error!(%erreur, "configuration du modèle refusée");
+            std::process::exit(SORTIE_ERREUR);
+        }
+    };
+    tracing::info!(
+        fournisseur = %config.fournisseur,
+        modele = %config.modele,
+        jetons_max = config.jetons_max,
+        delai = ?config.delai,
+        "modèle configuré"
+    );
+    match ClientHttp::new(config) {
+        Ok(client) => Arc::new(client),
+        Err(erreur) => {
+            tracing::error!(%erreur, "client de modèle impossible à construire");
+            std::process::exit(SORTIE_ERREUR);
+        }
+    }
+}
+
 /// Charge la configuration, ou sort en nommant la variable fautive.
 ///
 /// Un seul endroit pour cette politique. Elle a été écrite deux fois — une version journalisant
@@ -163,7 +199,7 @@ async fn ecouter() {
     let config = config_ou_sortir();
     tracing::info!(config = ?config, "configuration chargée");
 
-    if let Err(erreur) = app::scruter(&config, app::signal_d_arret()).await {
+    if let Err(erreur) = app::scruter(&config, modele_ou_sortir(), app::signal_d_arret()).await {
         tracing::error!(%erreur, "la scrutation s'est arrêtée sur une erreur");
         std::process::exit(SORTIE_ERREUR);
     }
@@ -175,7 +211,7 @@ async fn servir() {
     let config = config_ou_sortir();
     tracing::info!(config = ?config, "configuration chargée");
 
-    if let Err(erreur) = app::servir(&config, app::signal_d_arret()).await {
+    if let Err(erreur) = app::servir(&config, modele_ou_sortir(), app::signal_d_arret()).await {
         tracing::error!(%erreur, "le service s'est arrêté sur une erreur");
         std::process::exit(SORTIE_ERREUR);
     }

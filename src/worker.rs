@@ -33,8 +33,10 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::db::{Base, file, utilisateurs};
+use crate::db::dialogue::{Auteur, Interlocuteur};
+use crate::db::{Base, consommation, dialogue, file, utilisateurs};
 use crate::error::ErrorCode;
+use crate::modele::{ClientModele, ContexteConversation, ErreurModele, Role, Tour};
 use crate::telegram::Canal;
 use crate::telegram::envoi::Action;
 use crate::telegram::types::Recu;
@@ -72,13 +74,22 @@ const REPOS_APRES_ECHEC: Duration = Duration::from_millis(25);
 /// Repos quand la file est vide. Borne haute de la latence ajoutée par la scrutation.
 const REPOS_MAX: Duration = Duration::from_millis(250);
 
-/// Ce que la phase 1.1 répond, en attendant qu'un compagnon réponde à sa place.
-fn repondre(recu: &Recu) -> String {
-    format!(
-        "« {} »\n\n(écho — phase 1.1 : la file est en base et survit à un arrêt brutal, aucun compagnon n'est encore branché)",
-        recu.texte
-    )
-}
+/// Ce que reçoit quelqu'un qui n'a pas encore de compagnon actif.
+///
+/// Un seul message pour trois causes internes — aucun compagnon, un brouillon, un prompt non
+/// validé — parce que la conduite à tenir est la même. Les distinguer exposerait un vocabulaire
+/// interne à quelqu'un qui n'a rien demandé de tel.
+const AUCUN_COMPAGNON: &str = "Tu n'as pas encore d'assistant.\n\n\
+     La création n'est pas encore ouverte depuis Telegram — elle arrive. \
+     En attendant, il n'y a personne pour te répondre.";
+
+/// Ce que reçoit quelqu'un dont le compagnon est momentanément indisponible.
+///
+/// Ne nomme ni le modèle, ni le fournisseur, ni le code d'erreur : ce sont des mots qui
+/// n'appartiennent pas à cette conversation. Ne joue pas non plus le personnage — faire dire au
+/// compagnon « je suis fatigué » pour masquer une panne serait un mensonge, et le produit tout
+/// entier repose sur ce que l'utilisateur croit de lui.
+const INDISPONIBLE: &str = "Je n'arrive pas à répondre pour le moment. Réessaie dans un instant.";
 
 /// Ce que reçoit quelqu'un dont l'âge n'est pas vérifié.
 ///
@@ -109,8 +120,16 @@ pub struct Equipe {
 
 impl Equipe {
     /// Lance [`WORKERS`] consommateurs sur cette base.
+    ///
+    /// Le client de modèle est partagé, pas dupliqué : il porte un pool de connexions HTTP que
+    /// les quatre workers ont intérêt à réutiliser, et un secret qu'on ne recopie pas quatre
+    /// fois sur le tas.
+    ///
+    /// Il est reçu en paramètre plutôt que construit ici, ce qui est la raison d'être du trait :
+    /// les tests injectent un double qui fabrique les pannes du fournisseur, et le worker est
+    /// alors éprouvé sur des échecs qui, en production, n'arrivent qu'au pire moment.
     #[must_use]
-    pub fn lancer(base: &Base, canal: &Arc<Canal>) -> Self {
+    pub fn lancer(base: &Base, canal: &Arc<Canal>, modele: &Arc<dyn ClientModele>) -> Self {
         let (arret, ecoute) = watch::channel(false);
         let vivants = Arc::new(AtomicUsize::new(WORKERS));
         let taches = (0..WORKERS)
@@ -118,6 +137,7 @@ impl Equipe {
                 tokio::spawn(tourner(
                     base.clone(),
                     Arc::clone(canal),
+                    Arc::clone(modele),
                     ecoute.clone(),
                     numero,
                     Arc::clone(&vivants),
@@ -178,6 +198,7 @@ impl Equipe {
 async fn tourner(
     base: Base,
     canal: Arc<Canal>,
+    modele: Arc<dyn ClientModele>,
     mut arret: watch::Receiver<bool>,
     numero: usize,
     vivants: Arc<AtomicUsize>,
@@ -194,7 +215,7 @@ async fn tourner(
         // se reposer, et l'attente est faite une fois, au même endroit, toujours interruptible.
         let repos = match file::prendre(base.pool(), BAIL).await {
             Ok(Some(tache)) => {
-                let issue = traiter(&base, &canal, &tache).await;
+                let issue = traiter(&base, &canal, modele.as_ref(), &tache).await;
                 traites += 1;
                 match issue {
                     // Rien à attendre : la file vient de prouver qu'elle a du travail.
@@ -231,7 +252,12 @@ enum Issue {
 }
 
 /// Traite une tâche prise, et la rend à la file dans tous les cas.
-async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
+async fn traiter(
+    base: &Base,
+    canal: &Canal,
+    modele: &dyn ClientModele,
+    tache: &file::Tache,
+) -> Issue {
     let Ok(recu) = serde_json::from_value::<Recu>(tache.charge_utile.clone()) else {
         tracing::error!(
             tache = %tache.id,
@@ -254,21 +280,101 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
         }
     };
 
-    let texte = if verifie {
-        repondre(&recu)
-    } else {
+    if !verifie {
         tracing::info!(
             chat_id = recu.chat_id,
             "âge non vérifié, accès au moteur refusé"
         );
-        VERIFICATION_REQUISE.to_owned()
+        return conclure(base, canal, tache, &recu, VERIFICATION_REQUISE).await;
+    }
+
+    // À qui parle-t-on, et avec quel texte. Cette lecture décide aussi de ce qu'on ne fait
+    // pas : sans compagnon validé, aucun appel au modèle n'a lieu — donc rien n'est facturé
+    // pour quelqu'un qui n'a encore rien à qui parler.
+    let compagnon = match dialogue::ouvrir(base.pool(), recu.utilisateur_id).await {
+        Ok(Interlocuteur::Pret(compagnon)) => compagnon,
+        Ok(Interlocuteur::Aucun) => {
+            tracing::info!(chat_id = recu.chat_id, "aucun compagnon actif");
+            return conclure(base, canal, tache, &recu, AUCUN_COMPAGNON).await;
+        }
+        Ok(Interlocuteur::PromptAltere { personnage_id }) => {
+            // Le prompt système est le seul point de contrôle de la modération. Un texte qui ne
+            // correspond plus à son empreinte n'a franchi aucun contrôle, et une reprise le
+            // trouverait tout aussi altéré : la tâche est close, pas remise en file.
+            tracing::error!(
+                %personnage_id,
+                code = ErrorCode::Interne.code(),
+                "prompt système altéré hors processus, appel au modèle refusé"
+            );
+            return conclure(base, canal, tache, &recu, INDISPONIBLE).await;
+        }
+        Err(erreur) => {
+            tracing::error!(tache = %tache.id, %erreur, "compagnon illisible");
+            rendre_en_echec(base, tache, ErrorCode::Interne).await;
+            return Issue::Echouee;
+        }
     };
 
-    // L'indication d'activité est un confort : son échec ne doit pas empêcher la réponse.
+    // Le message entrant est inscrit AVANT l'appel : s'il échoue, ce que la personne a écrit
+    // reste. Le perdre serait le pire des échecs — bien pire que l'absence de réponse.
+    if let Err(erreur) = dialogue::inscrire_message(
+        base.pool(),
+        compagnon.conversation_id,
+        Auteur::Utilisateur,
+        &recu.texte,
+        Some(recu.message_id),
+    )
+    .await
+    {
+        tracing::error!(tache = %tache.id, %erreur, "message entrant non inscrit");
+        rendre_en_echec(base, tache, ErrorCode::Interne).await;
+        return Issue::Echouee;
+    }
+
+    // L'indication d'activité est un confort : son échec ne doit pas empêcher la réponse. Elle
+    // compte davantage qu'en phase 1.1 — l'écho partait en cinquante millisecondes, un modèle
+    // met des secondes, et pendant ces secondes elle est tout ce que la personne voit.
     if let Err(erreur) = canal.action(recu.chat_id, Action::Typing).await {
         tracing::debug!(chat_id = recu.chat_id, %erreur, "indication d'activité non affichée");
     }
 
+    let contexte = ContexteConversation {
+        prompt_systeme: compagnon.prompt_systeme.clone(),
+        echanges: vec![Tour {
+            role: Role::Utilisateur,
+            texte: recu.texte.clone(),
+        }],
+    };
+
+    // Aucune transaction n'est tenue pendant cet appel : le pool est dimensionné pour seize
+    // connexions et quatre workers, et retenir une connexion pendant une seconde de calcul GPU
+    // renverserait ce raisonnement (voir `db::CONNEXIONS_MAX`).
+    let reponse = match modele.repondre(&contexte).await {
+        Ok(reponse) => reponse,
+        Err(erreur) => return echec_du_modele(base, canal, modele, tache, &recu, &compagnon, &erreur).await,
+    };
+
+    if reponse.tronquee {
+        // Envoyée quand même : une phrase inachevée vaut mieux qu'un silence. Mais elle se voit,
+        // et la cause est un réglage — pas une panne.
+        tracing::warn!(
+            chat_id = recu.chat_id,
+            unites_sortie = ?reponse.unites_sortie,
+            "réponse coupée par la limite de jetons"
+        );
+    }
+
+    let cout_eur = modele.cout_eur(reponse.unites_entree, reponse.unites_sortie);
+    tracing::info!(
+        chat_id = recu.chat_id,
+        modele = %reponse.modele,
+        duree_ms = reponse.duree.as_millis(),
+        unites_sortie = ?reponse.unites_sortie,
+        cout_eur = %cout_eur,
+        "réponse produite"
+    );
+
+    let texte = reponse.texte.clone();
     match canal.envoyer_texte(recu.chat_id, &texte).await {
         Ok(identifiants) => {
             tracing::info!(
@@ -277,10 +383,56 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
                 morceaux = identifiants.len(),
                 "réponse envoyée"
             );
+
+            let message_id = match dialogue::inscrire_message(
+                base.pool(),
+                compagnon.conversation_id,
+                Auteur::Compagnon,
+                &texte,
+                identifiants.first().copied(),
+            )
+            .await
+            {
+                Ok(id) => Some(id),
+                Err(erreur) => {
+                    // La personne a sa réponse : la tâche ne doit pas être reprise, ce qui la
+                    // lui enverrait deux fois. On perd la trace, pas le message.
+                    tracing::error!(tache = %tache.id, %erreur, "réponse envoyée mais non inscrite");
+                    None
+                }
+            };
+
+            inscrire_au_registre(
+                base,
+                modele,
+                &recu,
+                &compagnon,
+                message_id,
+                Some(&reponse),
+                cout_eur,
+                consommation::Statut::Ok,
+            )
+            .await;
+
             clore(base, tache, "tâche traitée mais non close").await;
             Issue::Close
         }
         Err(erreur) => {
+            // Le modèle a été payé, que Telegram accepte ou non. La ligne est inscrite avant
+            // toute décision de reprise : un coût qu'on omet parce que l'envoi a raté est un
+            // coût qui manquera dans la marge, et la reprise en produira un second.
+            inscrire_au_registre(
+                base,
+                modele,
+                &recu,
+                &compagnon,
+                None,
+                Some(&reponse),
+                cout_eur,
+                consommation::Statut::Ok,
+            )
+            .await;
+
             if erreur.merite_une_reprise() {
                 tracing::warn!(
                     chat_id = recu.chat_id,
@@ -299,6 +451,158 @@ async fn traiter(base: &Base, canal: &Canal, tache: &file::Tache) -> Issue {
                 Issue::Close
             }
         }
+    }
+}
+
+/// Envoie un message de service et clôt la tâche.
+///
+/// Les trois refus — âge non vérifié, aucun compagnon, prompt altéré — partageaient le même
+/// épilogue : envoyer, journaliser, clore. Écrit trois fois, il aurait divergé trois fois ; et
+/// c'est justement sur ces chemins-là, les moins parcourus, qu'une divergence ne se voit pas.
+///
+/// Le refus lui-même n'est jamais repris — réessayer referait exactement le même refus. Mais
+/// l'**envoi** l'est, exactement comme sur le chemin principal : une coupure réseau ne doit pas
+/// faire disparaître le message qui explique à quelqu'un pourquoi il n'a pas de réponse. Une
+/// première version clôturait la tâche quoi qu'il arrive, et perdait donc silencieusement le
+/// seul message qui distinguait un refus d'une panne.
+async fn conclure(
+    base: &Base,
+    canal: &Canal,
+    tache: &file::Tache,
+    recu: &Recu,
+    texte: &str,
+) -> Issue {
+    match canal.envoyer_texte(recu.chat_id, texte).await {
+        Ok(_) => {
+            clore(base, tache, "message de service envoyé mais tâche non close").await;
+            Issue::Close
+        }
+        Err(erreur) if erreur.merite_une_reprise() => {
+            tracing::warn!(
+                chat_id = recu.chat_id,
+                tentative = tache.tentatives,
+                %erreur,
+                "message de service non envoyé, tâche remise en file"
+            );
+            rendre_en_echec(base, tache, ErrorCode::EnvoiImpossible).await;
+            Issue::Echouee
+        }
+        Err(erreur) => {
+            tracing::info!(chat_id = recu.chat_id, %erreur, "refus définitif de Telegram");
+            clore(base, tache, "message de service abandonné mais tâche non close").await;
+            Issue::Close
+        }
+    }
+}
+
+/// Décide de la suite quand le modèle n'a pas répondu.
+///
+/// Deux questions, dans cet ordre : l'erreur mérite-t-elle une reprise, et reste-t-il des
+/// tentatives ? La seconde compte autant que la première — sans elle, la dernière tentative
+/// d'une panne passagère laisse la personne devant un silence, ce qui est indiscernable d'un
+/// bot mort.
+///
+/// Le passage de `tentatives_max = 0` à [`file::echouer`] n'est pas une astuce : la file dit
+/// « échec définitif quand `tentatives >= max` », et zéro est la façon d'exprimer « ne rejoue
+/// pas » dans le vocabulaire qui existe déjà, plutôt que d'ajouter une seconde fonction.
+async fn echec_du_modele(
+    base: &Base,
+    canal: &Canal,
+    modele: &dyn ClientModele,
+    tache: &file::Tache,
+    recu: &Recu,
+    compagnon: &dialogue::Compagnon,
+    erreur: &ErreurModele,
+) -> Issue {
+    // Un appel qui échoue après le début de la génération est souvent facturé. Le coût réel
+    // est inconnu — le fournisseur n'a rien rendu — mais la ligne existe, ce qui rend l'échec
+    // visible dans le registre au lieu de le laisser invisible dans la marge.
+    inscrire_au_registre(
+        base,
+        modele,
+        recu,
+        compagnon,
+        None,
+        None,
+        rust_decimal::Decimal::ZERO,
+        consommation::Statut::Echec,
+    )
+    .await;
+
+    let rejouable = erreur.merite_une_reprise();
+    let reste_des_tentatives = tache.tentatives < TENTATIVES_MAX;
+
+    if rejouable && reste_des_tentatives {
+        tracing::warn!(
+            chat_id = recu.chat_id,
+            tentative = tache.tentatives,
+            %erreur,
+            "modèle indisponible, tâche remise en file"
+        );
+        rendre_en_echec(base, tache, ErrorCode::Interne).await;
+        return Issue::Echouee;
+    }
+
+    tracing::error!(
+        chat_id = recu.chat_id,
+        tentative = tache.tentatives,
+        rejouable,
+        %erreur,
+        "modèle indisponible, abandon définitif"
+    );
+    if let Err(erreur_envoi) = canal.envoyer_texte(recu.chat_id, INDISPONIBLE).await {
+        tracing::warn!(chat_id = recu.chat_id, %erreur_envoi, "excuse non envoyée");
+    }
+    // `tentatives_max = 0` : la tâche passe en `echec` sans nouvelle reprise, puisque la
+    // personne vient d'être prévenue. La reprendre lui écrirait deux fois.
+    if let Err(erreur_file) =
+        file::echouer(base.pool(), tache.id, i32::from(ErrorCode::Interne.code()), 0).await
+    {
+        tracing::error!(tache = %tache.id, %erreur_file, "tâche abandonnée et non rendue");
+    }
+    Issue::Close
+}
+
+/// Inscrit une ligne au registre des coûts, en journalisant si l'écriture échoue.
+///
+/// Ne rend pas d'erreur, et c'est délibéré : un registre qui refuse une écriture ne doit pas
+/// faire perdre à quelqu'un une réponse déjà produite et déjà payée. La perte est journalisée
+/// pour se retrouver dans l'écart avec la facture du fournisseur.
+#[allow(clippy::too_many_arguments)]
+async fn inscrire_au_registre(
+    base: &Base,
+    modele: &dyn ClientModele,
+    recu: &Recu,
+    compagnon: &dialogue::Compagnon,
+    message_id: Option<uuid::Uuid>,
+    reponse: Option<&crate::modele::ReponseModele>,
+    cout_eur: rust_decimal::Decimal,
+    statut: consommation::Statut,
+) {
+    let appel = consommation::Appel {
+        utilisateur_id: recu.utilisateur_id,
+        conversation_id: Some(compagnon.conversation_id),
+        message_id,
+        type_appel: consommation::TypeAppel::Message,
+        origine: consommation::Origine::Reponse,
+        fournisseur: modele.fournisseur(),
+        // L'identifiant rendu par le fournisseur, jamais celui demandé : mesuré, un serveur
+        // peut répondre avec un autre modèle sans le dire. « inconnu » quand l'appel a échoué
+        // avant toute réponse — la colonne est `not null`, et mentir un nom serait pire.
+        modele: reponse.map_or("inconnu", |r| r.modele.as_str()),
+        unites_entree: reponse.and_then(|r| r.unites_entree),
+        unites_sortie: reponse.and_then(|r| r.unites_sortie),
+        cout_eur,
+        duree: reponse.map(|r| r.duree),
+        statut,
+    };
+
+    if let Err(erreur) = consommation::inscrire(base.pool(), &appel).await {
+        tracing::error!(
+            chat_id = recu.chat_id,
+            %erreur,
+            "appel non inscrit au registre des coûts"
+        );
     }
 }
 
@@ -346,11 +650,30 @@ mod tests {
     }
 
     #[test]
-    fn l_echo_reprend_le_texte_et_annonce_ce_qu_il_est() {
-        let reponse = repondre(&recu_de("salut, tu fais quoi ?"));
-        println!("réponse produite :\n---\n{reponse}\n---");
-        assert!(reponse.contains("salut, tu fais quoi ?"));
-        assert!(reponse.contains("phase 1.1"));
+    fn les_messages_de_service_ne_jouent_jamais_le_personnage() {
+        // Tout ce que le worker peut dire de lui-même, plutôt qu'à travers le compagnon. La
+        // règle est unique et vaut pour les trois : ne pas emprunter la voix du compagnon pour
+        // annoncer une limite de service ou une panne. Faire dire « je suis fatigué » à un
+        // personnage pour masquer un fournisseur injoignable serait un mensonge — et le produit
+        // entier repose sur ce que la personne croit de lui.
+        for (nom, texte) in [
+            ("âge non vérifié", VERIFICATION_REQUISE),
+            ("aucun compagnon", AUCUN_COMPAGNON),
+            ("indisponible", INDISPONIBLE),
+        ] {
+            println!("--- {nom} ---\n{texte}\n");
+            assert!(!texte.is_empty());
+            // Aucun vocabulaire interne : ces mots n'appartiennent pas à la conversation.
+            for interdit in ["modèle", "fournisseur", "worker", "tâche", "prompt", "erreur"] {
+                assert!(
+                    !texte.to_lowercase().contains(interdit),
+                    "« {interdit} » n'a rien à faire dans le message « {nom} »"
+                );
+            }
+        }
+        assert!(VERIFICATION_REQUISE.contains("vérification d'âge"));
+        assert!(AUCUN_COMPAGNON.contains("assistant"));
+        assert!(INDISPONIBLE.contains("Réessaie"));
     }
 
     #[test]
@@ -368,9 +691,4 @@ mod tests {
         assert_eq!(apres.message_id, avant.message_id);
     }
 
-    #[test]
-    fn le_message_de_verification_ne_joue_pas_de_personnage() {
-        println!("---\n{VERIFICATION_REQUISE}\n---");
-        assert!(VERIFICATION_REQUISE.contains("vérification d'âge"));
-    }
 }

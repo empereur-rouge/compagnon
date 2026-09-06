@@ -85,8 +85,9 @@ catalogue. Le paramètre reste libre pour du parrainage.
 - `assistant` pend de l'utilisateur, et la mémoire pend de l'assistant : voir
   [[un-assistant-par-personne]].
 - `/start` doit être traité à part dès la phase 1 : c'est le parcours de création, donc le
-  moment le plus fragile du produit. En phase 0 il est renvoyé en écho, ce que la carte des
-  parcours signale comme la friction n° 2.
+  moment le plus fragile du produit. Il n'est toujours pas traité en phase 1.3 : quelqu'un sans
+  compagnon reçoit un message qui le dit, et rien de plus. La carte des parcours le signale
+  comme la friction n° 2.
 
 ## Interactions
 

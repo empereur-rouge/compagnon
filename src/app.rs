@@ -31,6 +31,7 @@ use tokio::net::TcpListener;
 use crate::config::Config;
 use crate::db::{Base, ErreurBase};
 use crate::horloge;
+use crate::modele::ClientModele;
 use crate::http::{self, EtatApp};
 use crate::scrutation;
 use crate::telegram::envoi::ErreurEnvoi;
@@ -97,11 +98,18 @@ pub struct Prepare {
 
 /// Assemble le service et prend l'adresse d'écoute, sans encore servir.
 ///
+/// Le client de modèle est **reçu**, pas construit ici : c'est ce qui permet aux tests
+/// d'injecter un double et d'éprouver le service entier face à un fournisseur qui expire,
+/// refuse, ou ne rend rien. Le binaire lui passe l'implémentation HTTP.
+///
 /// # Errors
 ///
 /// Renvoie [`ErreurDemarrage`] si le canal ne se construit pas, si Telegram refuse le jeton,
 /// ou si l'adresse d'écoute est indisponible.
-pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
+pub async fn preparer(
+    config: &Config,
+    modele: Arc<dyn ClientModele>,
+) -> Result<Prepare, ErreurDemarrage> {
     let canal = Arc::new(Canal::new(config)?);
 
     let identite = canal.identite().await?;
@@ -134,7 +142,7 @@ pub async fn preparer(config: &Config) -> Result<Prepare, ErreurDemarrage> {
     // éphémère que seul le système connaît, et c'est celui-là qu'il faut annoncer.
     let adresse = ecoute.local_addr().map_err(echec)?;
 
-    let equipe = Equipe::lancer(&base, &canal);
+    let equipe = Equipe::lancer(&base, &canal, &modele);
 
     let routeur = http::routeur(EtatApp {
         canal,
@@ -196,9 +204,10 @@ impl Prepare {
 /// Renvoie [`ErreurDemarrage`] à la première étape qui échoue.
 pub async fn servir(
     config: &Config,
+    modele: Arc<dyn ClientModele>,
     arret: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ErreurDemarrage> {
-    preparer(config).await?.servir(arret).await
+    preparer(config, modele).await?.servir(arret).await
 }
 
 /// Écoute Telegram par scrutation, sans servir de webhook.
@@ -220,6 +229,7 @@ pub async fn servir(
 /// Renvoie [`ErreurDemarrage`] si le canal ne se construit pas ou si Telegram refuse le jeton.
 pub async fn scruter(
     config: &Config,
+    modele: Arc<dyn ClientModele>,
     arret: impl Future<Output = ()> + Send,
 ) -> Result<(), ErreurDemarrage> {
     let canal = Canal::new(config)?;
@@ -239,7 +249,7 @@ pub async fn scruter(
     tracing::info!(base = %crate::config::masquer_url(config.url_base.exposer()), "base jointe et migrée");
 
     let canal = Arc::new(canal);
-    let equipe = Equipe::lancer(&base, &canal);
+    let equipe = Equipe::lancer(&base, &canal, &modele);
 
     scrutation::tourner(&canal, &base, arret).await;
 
